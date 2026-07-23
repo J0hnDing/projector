@@ -84,6 +84,14 @@ pub struct GitInfo {
     pub dirty: Option<bool>,
     pub recent_commits: Vec<GitCommit>,
     pub last_activity: Option<DateTime<Utc>>,
+    pub upstream: Option<String>,
+    pub ahead: Option<usize>,
+    pub behind: Option<usize>,
+    pub sync_status: GitSyncStatus,
+    pub sync_message: Option<String>,
+    pub fetch_status: GitFetchStatus,
+    pub last_successful_fetch: Option<DateTime<Utc>>,
+    pub fetch_error: Option<String>,
     pub error: Option<String>,
 }
 
@@ -95,6 +103,14 @@ impl GitInfo {
             dirty: None,
             recent_commits: Vec::new(),
             last_activity: None,
+            upstream: None,
+            ahead: None,
+            behind: None,
+            sync_status: GitSyncStatus::Unknown,
+            sync_message: None,
+            fetch_status: GitFetchStatus::Idle,
+            last_successful_fetch: None,
+            fetch_error: None,
             error: None,
         }
     }
@@ -105,6 +121,31 @@ impl GitInfo {
             ..Self::not_repository()
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum GitSyncStatus {
+    Ahead,
+    Behind,
+    Diverged,
+    Synchronized,
+    #[default]
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum GitFetchStatus {
+    #[default]
+    Idle,
+    Fetching,
+    Succeeded,
+    NoRemote,
+    AuthenticationFailed,
+    Offline,
+    TimedOut,
+    Failed,
 }
 
 #[derive(Clone, Debug, Serialize)]

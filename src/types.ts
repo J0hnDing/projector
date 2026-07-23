@@ -13,6 +13,14 @@ export interface GitInfo {
   dirty: boolean | null;
   recentCommits: GitCommit[];
   lastActivity: string | null;
+  upstream: string | null;
+  ahead: number | null;
+  behind: number | null;
+  syncStatus: "ahead" | "behind" | "diverged" | "synchronized" | "unknown";
+  syncMessage: string | null;
+  fetchStatus: "idle" | "fetching" | "succeeded" | "noRemote" | "authenticationFailed" | "offline" | "timedOut" | "failed";
+  lastSuccessfulFetch: string | null;
+  fetchError: string | null;
   error: string | null;
 }
 

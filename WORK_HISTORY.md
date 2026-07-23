@@ -1,5 +1,12 @@
 # Working history
 
+## 2026-07-23 — Git synchronization awareness
+
+- Added non-blocking `git fetch --all --prune` at startup and on manual refresh, with duplicate-fetch suppression and a 30-second timeout.
+- Kept cached local Git information visible while fetches run and pushed completion updates to the UI.
+- Added upstream ahead/behind/diverged/synchronized classification, persisted last-success timestamps, and graceful remote, authentication, offline, timeout, and missing-upstream states.
+- Added Rust tests for status classification and fetch failure handling.
+
 ## 2026-07-22 — Initial MVP
 
 - Bootstrapped Projector as a React, TypeScript, and Tauri 2 desktop application.

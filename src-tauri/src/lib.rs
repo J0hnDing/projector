@@ -1,3 +1,4 @@
+mod git_sync;
 mod models;
 mod observer;
 mod registry;
@@ -5,15 +6,17 @@ mod watcher;
 
 use std::{path::PathBuf, sync::Mutex};
 
+use git_sync::GitSyncManager;
 use models::{ProjectDetail, ProjectSummary};
 use registry::RegistryStore;
-use tauri::{Manager, State};
+use tauri::{AppHandle, Manager, State};
 use uuid::Uuid;
 use watcher::ProjectWatcher;
 
 struct AppState {
     registry: Mutex<RegistryStore>,
     watcher: Mutex<ProjectWatcher>,
+    git_sync: GitSyncManager,
 }
 
 #[tauri::command]
@@ -24,9 +27,18 @@ async fn list_projects(state: State<'_, AppState>) -> Result<Vec<ProjectSummary>
         .map_err(|_| "The project registry is unavailable".to_string())?
         .entries()
         .to_vec();
+    inspect_projects(entries, state.git_sync.clone()).await
+}
 
+async fn inspect_projects(
+    entries: Vec<models::RegistryEntry>,
+    git_sync: GitSyncManager,
+) -> Result<Vec<ProjectSummary>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let mut projects: Vec<_> = entries.iter().map(observer::summarize).collect();
+        let mut projects: Vec<_> = entries
+            .iter()
+            .map(|entry| observer::summarize(entry, &git_sync.snapshot(entry.id)))
+            .collect();
         projects.sort_by(|left, right| {
             right
                 .last_opened
@@ -42,6 +54,7 @@ async fn list_projects(state: State<'_, AppState>) -> Result<Vec<ProjectSummary>
 #[tauri::command]
 async fn register_project(
     path: String,
+    app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<ProjectSummary, String> {
     let entry = state
@@ -60,9 +73,14 @@ async fn register_project(
             format!("Project was registered, but automatic refresh could not start: {error}")
         })?;
 
-    tauri::async_runtime::spawn_blocking(move || observer::summarize(&entry))
-        .await
-        .map_err(|error| format!("Unable to inspect project: {error}"))
+    let fetch_entry = entry.clone();
+    let snapshot = state.git_sync.snapshot(entry.id);
+    let project =
+        tauri::async_runtime::spawn_blocking(move || observer::summarize(&entry, &snapshot))
+            .await
+            .map_err(|error| format!("Unable to inspect project: {error}"))?;
+    state.git_sync.fetch(app, fetch_entry);
+    Ok(project)
 }
 
 #[tauri::command]
@@ -80,6 +98,7 @@ fn remove_project(id: Uuid, state: State<'_, AppState>) -> Result<(), String> {
             .lock()
             .map_err(|_| "The project watcher is unavailable".to_string())?
             .unwatch(&entry.path);
+        state.git_sync.remove(id);
         Ok(())
     } else {
         Err(format!("Unknown project id {id}"))
@@ -95,7 +114,8 @@ async fn open_project(id: Uuid, state: State<'_, AppState>) -> Result<ProjectDet
         .touch(id)
         .map_err(|error| error.to_string())?;
 
-    tauri::async_runtime::spawn_blocking(move || observer::detail(&entry))
+    let snapshot = state.git_sync.snapshot(entry.id);
+    tauri::async_runtime::spawn_blocking(move || observer::detail(&entry, &snapshot))
         .await
         .map_err(|error| format!("Unable to inspect project: {error}"))
 }
@@ -110,9 +130,27 @@ async fn refresh_project(id: Uuid, state: State<'_, AppState>) -> Result<Project
         .cloned()
         .ok_or_else(|| format!("Unknown project id {id}"))?;
 
-    tauri::async_runtime::spawn_blocking(move || observer::detail(&entry))
+    let snapshot = state.git_sync.snapshot(entry.id);
+    tauri::async_runtime::spawn_blocking(move || observer::detail(&entry, &snapshot))
         .await
         .map_err(|error| format!("Unable to inspect project: {error}"))
+}
+
+#[tauri::command]
+async fn refresh_projects(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Vec<ProjectSummary>, String> {
+    let entries = state
+        .registry
+        .lock()
+        .map_err(|_| "The project registry is unavailable".to_string())?
+        .entries()
+        .to_vec();
+    for entry in &entries {
+        state.git_sync.fetch(app.clone(), entry.clone());
+    }
+    inspect_projects(entries, state.git_sync.clone()).await
 }
 
 pub fn run() {
@@ -120,6 +158,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let registry_path = app.path().app_data_dir()?.join("registered-projects.json");
+            let sync_cache_path = app.path().app_data_dir()?.join("git-sync-cache.json");
             let registry = RegistryStore::load(registry_path)
                 .map_err(|error| Box::<dyn std::error::Error>::from(error.to_string()))?;
             let mut watcher = ProjectWatcher::new(app.handle().clone())?;
@@ -128,10 +167,16 @@ pub fn run() {
                     let _ = watcher.watch(&entry.path);
                 }
             }
+            let startup_entries = registry.entries().to_vec();
+            let git_sync = GitSyncManager::load(sync_cache_path);
             app.manage(AppState {
                 registry: Mutex::new(registry),
                 watcher: Mutex::new(watcher),
+                git_sync: git_sync.clone(),
             });
+            for entry in startup_entries {
+                git_sync.fetch(app.handle().clone(), entry);
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -139,7 +184,8 @@ pub fn run() {
             register_project,
             remove_project,
             open_project,
-            refresh_project
+            refresh_project,
+            refresh_projects
         ])
         .run(tauri::generate_context!())
         .expect("error while running Projector");

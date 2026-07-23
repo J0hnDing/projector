@@ -12,8 +12,10 @@ vi.mock("./api", () => ({
   removeProject: vi.fn(),
   openProject: vi.fn(),
   refreshProject: vi.fn(),
+  refreshProjects: vi.fn(),
   chooseProjectDirectory: vi.fn(),
   onProjectChanged: vi.fn().mockResolvedValue(() => undefined),
+  onGitSyncChanged: vi.fn().mockResolvedValue(() => undefined),
 }));
 
 const detail: ProjectDetail = {
@@ -29,6 +31,14 @@ const detail: ProjectDetail = {
       dirty: false,
       recentCommits: [],
       lastActivity: "2026-07-22T10:30:00Z",
+      upstream: "origin/main",
+      ahead: 0,
+      behind: 0,
+      syncStatus: "synchronized",
+      syncMessage: null,
+      fetchStatus: "succeeded",
+      lastSuccessfulFetch: "2026-07-22T10:31:00Z",
+      fetchError: null,
       error: null,
     },
   },
@@ -43,7 +53,10 @@ describe("App", () => {
   beforeEach(() => {
     vi.mocked(api.listProjects).mockReset();
     vi.mocked(api.openProject).mockReset();
+    vi.mocked(api.refreshProject).mockReset();
+    vi.mocked(api.refreshProjects).mockReset();
     vi.mocked(api.listProjects).mockResolvedValue([]);
+    vi.mocked(api.refreshProjects).mockResolvedValue([]);
   });
 
   it("shows a clear first-run state", async () => {
@@ -75,6 +88,23 @@ describe("App", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Register your first project" }));
     await waitFor(() => expect(api.registerProject).toHaveBeenCalledWith("C:\\code\\example"));
     expect(await screen.findByRole("heading", { name: "Example" })).toBeInTheDocument();
+  });
+
+  it("starts background Git synchronization on manual refresh", async () => {
+    vi.mocked(api.listProjects).mockResolvedValue([detail.project]);
+    vi.mocked(api.openProject).mockResolvedValue(detail);
+    vi.mocked(api.refreshProjects).mockResolvedValue([
+      { ...detail.project, git: { ...detail.project.git, fetchStatus: "fetching" } },
+    ]);
+    vi.mocked(api.refreshProject).mockResolvedValue({
+      ...detail,
+      project: { ...detail.project, git: { ...detail.project.git, fetchStatus: "fetching" } },
+    });
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "Example" });
+    await userEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    await waitFor(() => expect(api.refreshProjects).toHaveBeenCalledOnce());
   });
 });
 

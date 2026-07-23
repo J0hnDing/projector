@@ -5,17 +5,18 @@ Projector is a lightweight local desktop application for observing software proj
 ## MVP capabilities
 
 - Register and remove local project directories. Removing a project only removes its registry entry.
-- Show project name, path, Git branch, clean/dirty state, last repository activity, and last-opened time.
+- Show project name, path, Git branch, clean/dirty state, upstream relationship, last successful fetch, last repository activity, and last-opened time.
 - Render `README.md`, `TODO.md`, and work history (`WORK_HISTORY.md` or `WORKING_HISTORY.md`) from either the project root or `docs/`, using case-insensitive filename matching.
 - Show up to 25 recent commits.
+- Run `git fetch --all --prune` in the background at startup and on manual refresh, then report ahead, behind, diverged, synchronized, or unknown status.
 - Refresh automatically after changes beneath a registered directory, with a manual refresh available as a fallback.
-- Handle missing documents, non-Git folders, moved/inaccessible paths, and read errors without preventing access to the rest of the project view.
+- Handle missing documents, non-Git folders, missing remotes or upstreams, authentication/offline failures, fetch timeouts, moved/inaccessible paths, and read errors without preventing access to the rest of the project view.
 
-Projector does not start processes, execute shell commands, build projects, edit project files, or provide project runtime controls.
+The only project command Projector runs is the bounded background fetch above. It never pulls, merges, rebases, pushes, builds projects, edits working-tree files, or provides project runtime controls.
 
 ## Stack and design
 
-The desktop shell is [Tauri 2](https://v2.tauri.app/) with a React and TypeScript interface built by Vite. Tauri uses the operating system webview instead of bundling a browser engine. Rust owns the local trust boundary: it validates and stores registered paths, reads recognized documents, observes Git through libgit2, and emits filesystem-change events. The UI receives structured data through a small set of Tauri commands and has no general filesystem, shell, or process permission.
+The desktop shell is [Tauri 2](https://v2.tauri.app/) with a React and TypeScript interface built by Vite. Tauri uses the operating system webview instead of bundling a browser engine. Rust owns the local trust boundary: it validates and stores registered paths, reads recognized documents, observes Git through libgit2, coordinates bounded Git fetches, and emits change events. The UI receives structured data through a small set of Tauri commands and has no general filesystem, shell, or process permission.
 
 This split leaves a clear boundary for later services while keeping the observation MVP small. Any future runtime-management service must be separate and explicitly permissioned; it is not present in this milestone.
 
@@ -36,7 +37,7 @@ Missing files are shown as missing. A document path that resolves outside the re
 
 ## Local data and access
 
-The application stores `registered-projects.json` in the operating system application-data directory for the `com.local.projector` identifier. It contains only registry version, project ID, canonical location, display name, registration time, and last-opened time. Project content and Git history are never copied into application storage.
+The application stores `registered-projects.json` in the operating system application-data directory for the `com.local.projector` identifier. It contains only registry version, project ID, canonical location, display name, registration time, and last-opened time. A separate `git-sync-cache.json` stores only the last successful fetch time per project. Project content and Git history are never copied into application storage.
 
 Filesystem observation is created only for registered roots. Document and Git requests use a registered project ID rather than accepting a path from the UI. Git worktrees whose `.git` metadata resolves outside the registered root are intentionally not inspected in the MVP.
 

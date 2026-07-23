@@ -5,30 +5,31 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
-use git2::{ErrorCode, Repository, StatusOptions};
+use git2::{BranchType, ErrorCode, Repository, StatusOptions};
 
+use crate::git_sync::GitFetchSnapshot;
 use crate::models::{
-    DocumentContent, DocumentStatus, GitCommit, GitInfo, ProjectDetail, ProjectDocuments,
-    ProjectSummary, RegistryEntry,
+    DocumentContent, DocumentStatus, GitCommit, GitInfo, GitSyncStatus, ProjectDetail,
+    ProjectDocuments, ProjectSummary, RegistryEntry,
 };
 
 const MAX_DOCUMENT_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_COMMITS: usize = 25;
 
-pub fn summarize(entry: &RegistryEntry) -> ProjectSummary {
+pub fn summarize(entry: &RegistryEntry, fetch: &GitFetchSnapshot) -> ProjectSummary {
     ProjectSummary {
         id: entry.id,
         name: entry.name.clone(),
         path: entry.path.clone(),
         registered_at: entry.registered_at,
         last_opened: entry.last_opened,
-        git: observe_git(&entry.path),
+        git: observe_git(&entry.path, fetch),
     }
 }
 
-pub fn detail(entry: &RegistryEntry) -> ProjectDetail {
+pub fn detail(entry: &RegistryEntry, fetch: &GitFetchSnapshot) -> ProjectDetail {
     ProjectDetail {
-        project: summarize(entry),
+        project: summarize(entry, fetch),
         documents: observe_documents(&entry.path),
     }
 }
@@ -174,20 +175,33 @@ fn document_error(name: &str, relative_path: Option<String>, error: String) -> D
     }
 }
 
-pub fn observe_git(root: &Path) -> GitInfo {
+pub fn observe_git(root: &Path, fetch: &GitFetchSnapshot) -> GitInfo {
     if !root.is_dir() {
-        return GitInfo::error("The registered project directory is no longer accessible");
+        return with_fetch(
+            GitInfo::error("The registered project directory is no longer accessible"),
+            fetch,
+        );
     }
 
     let repo = match Repository::open(root) {
         Ok(repo) => repo,
-        Err(error) if error.code() == ErrorCode::NotFound => return GitInfo::not_repository(),
-        Err(error) => return GitInfo::error(format!("Unable to inspect Git repository: {error}")),
+        Err(error) if error.code() == ErrorCode::NotFound => {
+            return with_fetch(GitInfo::not_repository(), fetch);
+        }
+        Err(error) => {
+            return with_fetch(
+                GitInfo::error(format!("Unable to inspect Git repository: {error}")),
+                fetch,
+            );
+        }
     };
 
     if !repository_is_within_root(&repo, root) {
-        return GitInfo::error(
-            "Git metadata resolves outside the registered project directory and was not read",
+        return with_fetch(
+            GitInfo::error(
+                "Git metadata resolves outside the registered project directory and was not read",
+            ),
+            fetch,
         );
     }
 
@@ -199,6 +213,7 @@ pub fn observe_git(root: &Path) -> GitInfo {
         Err(error) if error.code() == ErrorCode::UnbornBranch => Some("No commits yet".into()),
         Err(_) => None,
     };
+    let (upstream, ahead, behind, sync_status, sync_message) = upstream_status(&repo);
 
     let mut status_options = StatusOptions::new();
     status_options
@@ -214,6 +229,14 @@ pub fn observe_git(root: &Path) -> GitInfo {
                 dirty: None,
                 recent_commits: Vec::new(),
                 last_activity: newest_git_metadata_time(&repo),
+                upstream,
+                ahead,
+                behind,
+                sync_status,
+                sync_message,
+                fetch_status: fetch.status,
+                last_successful_fetch: fetch.last_successful_fetch,
+                fetch_error: fetch.error.clone(),
                 error: Some(format!("Unable to inspect working tree: {error}")),
             };
         }
@@ -240,7 +263,158 @@ pub fn observe_git(root: &Path) -> GitInfo {
         dirty: Some(dirty),
         recent_commits,
         last_activity,
+        upstream,
+        ahead,
+        behind,
+        sync_status,
+        sync_message,
+        fetch_status: fetch.status,
+        last_successful_fetch: fetch.last_successful_fetch,
+        fetch_error: fetch.error.clone(),
         error: None,
+    }
+}
+
+fn with_fetch(mut git: GitInfo, fetch: &GitFetchSnapshot) -> GitInfo {
+    git.fetch_status = fetch.status;
+    git.last_successful_fetch = fetch.last_successful_fetch;
+    git.fetch_error = fetch.error.clone();
+    git
+}
+
+fn upstream_status(
+    repo: &Repository,
+) -> (
+    Option<String>,
+    Option<usize>,
+    Option<usize>,
+    GitSyncStatus,
+    Option<String>,
+) {
+    let head = match repo.head() {
+        Ok(head) if head.is_branch() => head,
+        Ok(_) => {
+            return (
+                None,
+                None,
+                None,
+                GitSyncStatus::Unknown,
+                Some("Detached HEAD has no upstream branch.".into()),
+            );
+        }
+        Err(error) if error.code() == ErrorCode::UnbornBranch => {
+            return (
+                None,
+                None,
+                None,
+                GitSyncStatus::Unknown,
+                Some("The branch has no commits yet.".into()),
+            );
+        }
+        Err(error) => {
+            return (
+                None,
+                None,
+                None,
+                GitSyncStatus::Unknown,
+                Some(format!("Unable to inspect the current branch: {error}")),
+            );
+        }
+    };
+    let branch_name = match head.shorthand() {
+        Ok(branch_name) => branch_name,
+        Err(error) => {
+            return (
+                None,
+                None,
+                None,
+                GitSyncStatus::Unknown,
+                Some(format!("The current branch name is unavailable: {error}")),
+            );
+        }
+    };
+    let branch = match repo.find_branch(branch_name, BranchType::Local) {
+        Ok(branch) => branch,
+        Err(error) => {
+            return (
+                None,
+                None,
+                None,
+                GitSyncStatus::Unknown,
+                Some(format!("Unable to inspect the current branch: {error}")),
+            );
+        }
+    };
+    let upstream = match branch.upstream() {
+        Ok(upstream) => upstream,
+        Err(error) if error.code() == ErrorCode::NotFound => {
+            return (
+                None,
+                None,
+                None,
+                GitSyncStatus::Unknown,
+                Some("The current branch has no available upstream branch.".into()),
+            );
+        }
+        Err(error) => {
+            return (
+                None,
+                None,
+                None,
+                GitSyncStatus::Unknown,
+                Some(format!("Unable to inspect the upstream branch: {error}")),
+            );
+        }
+    };
+    let upstream_name = upstream
+        .name()
+        .ok()
+        .flatten()
+        .map(|name| name.trim_start_matches("refs/remotes/").to_owned());
+    let Some(local_oid) = branch.get().target() else {
+        return (
+            upstream_name,
+            None,
+            None,
+            GitSyncStatus::Unknown,
+            Some("The current branch target is unavailable.".into()),
+        );
+    };
+    let Some(upstream_oid) = upstream.get().target() else {
+        return (
+            upstream_name,
+            None,
+            None,
+            GitSyncStatus::Unknown,
+            Some("The upstream branch target is unavailable.".into()),
+        );
+    };
+    match repo.graph_ahead_behind(local_oid, upstream_oid) {
+        Ok((ahead, behind)) => (
+            upstream_name,
+            Some(ahead),
+            Some(behind),
+            classify_sync_status(ahead, behind),
+            None,
+        ),
+        Err(error) => (
+            upstream_name,
+            None,
+            None,
+            GitSyncStatus::Unknown,
+            Some(format!(
+                "Unable to compare with the upstream branch: {error}"
+            )),
+        ),
+    }
+}
+
+fn classify_sync_status(ahead: usize, behind: usize) -> GitSyncStatus {
+    match (ahead, behind) {
+        (0, 0) => GitSyncStatus::Synchronized,
+        (_, 0) => GitSyncStatus::Ahead,
+        (0, _) => GitSyncStatus::Behind,
+        _ => GitSyncStatus::Diverged,
     }
 }
 
@@ -369,7 +543,7 @@ mod tests {
     #[test]
     fn non_git_directories_are_supported() {
         let temp = tempfile::tempdir().unwrap();
-        let git = observe_git(temp.path());
+        let git = observe_git(temp.path(), &GitFetchSnapshot::default());
         assert!(!git.is_repository);
         assert!(git.error.is_none());
     }
@@ -394,15 +568,36 @@ mod tests {
         fs::write(temp.path().join("README.md"), "first").unwrap();
         commit_all(&repo, "Initial commit");
 
-        let clean = observe_git(temp.path());
+        let clean = observe_git(temp.path(), &GitFetchSnapshot::default());
         assert!(clean.is_repository);
         assert_eq!(clean.dirty, Some(false));
         assert_eq!(clean.recent_commits[0].summary, "Initial commit");
         assert!(clean.branch.is_some());
 
         fs::write(temp.path().join("README.md"), "changed").unwrap();
-        let dirty = observe_git(temp.path());
+        let dirty = observe_git(temp.path(), &GitFetchSnapshot::default());
         assert_eq!(dirty.dirty, Some(true));
+    }
+
+    #[test]
+    fn classifies_all_upstream_relationships() {
+        assert_eq!(classify_sync_status(0, 0), GitSyncStatus::Synchronized);
+        assert_eq!(classify_sync_status(2, 0), GitSyncStatus::Ahead);
+        assert_eq!(classify_sync_status(0, 3), GitSyncStatus::Behind);
+        assert_eq!(classify_sync_status(1, 1), GitSyncStatus::Diverged);
+    }
+
+    #[test]
+    fn branch_without_upstream_is_unknown_without_failing_observation() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = Repository::init(temp.path()).unwrap();
+        fs::write(temp.path().join("README.md"), "first").unwrap();
+        commit_all(&repo, "Initial commit");
+
+        let git = observe_git(temp.path(), &GitFetchSnapshot::default());
+        assert!(git.is_repository);
+        assert_eq!(git.sync_status, GitSyncStatus::Unknown);
+        assert!(git.sync_message.unwrap().contains("no available upstream"));
     }
 
     fn commit_all(repo: &Repository, message: &str) {

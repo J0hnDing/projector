@@ -40,11 +40,11 @@ export default function App() {
     selectedIdRef.current = selectedId;
   }, [selectedId]);
 
-  const openProject = useCallback(async (id: string, updateOpened = true) => {
+  const openProject = useCallback(async (id: string, updateOpened = true, showProgress = true) => {
     setSelectedId(id);
     selectedIdRef.current = id;
     setError(null);
-    setRefreshing(true);
+    if (showProgress) setRefreshing(true);
     try {
       const nextDetail = updateOpened
         ? await api.openProject(id)
@@ -54,7 +54,7 @@ export default function App() {
       setDetail(null);
       setError(messageFrom(reason));
     } finally {
-      setRefreshing(false);
+      if (showProgress) setRefreshing(false);
     }
   }, []);
 
@@ -94,7 +94,7 @@ export default function App() {
           try {
             await loadProjects();
             const id = selectedIdRef.current;
-            if (id) await openProject(id, false);
+            if (id) await openProject(id, false, false);
           } catch (reason) {
             setError(messageFrom(reason));
           }
@@ -109,6 +109,26 @@ export default function App() {
       unlisten?.();
       if (refreshTimer.current) clearTimeout(refreshTimer.current);
     };
+  }, [loadProjects, openProject]);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void api.onGitSyncChanged(() => {
+      void (async () => {
+        try {
+          await loadProjects();
+          const id = selectedIdRef.current;
+          if (id) await openProject(id, false, false);
+        } catch (reason) {
+          setError(messageFrom(reason));
+        }
+      })();
+    })
+      .then((stop) => {
+        unlisten = stop;
+      })
+      .catch((reason) => setError(`Git synchronization updates are unavailable: ${messageFrom(reason)}`));
+    return () => unlisten?.();
   }, [loadProjects, openProject]);
 
   const register = async () => {
@@ -145,7 +165,8 @@ export default function App() {
   const refresh = async () => {
     try {
       setError(null);
-      await loadProjects();
+      const nextProjects = await api.refreshProjects();
+      setProjects(nextProjects);
       if (selectedIdRef.current) await openProject(selectedIdRef.current, false);
     } catch (reason) {
       setError(messageFrom(reason));
@@ -227,6 +248,7 @@ function ProjectListItem({ project, selected, onSelect }: { project: ProjectSumm
       <span className="project-list-meta">
         <GitBadge git={project.git} />
         <span>{project.git.branch ?? "No Git"}</span>
+        {project.git.isRepository && <span>{syncStatusLabel(project.git)}</span>}
         <span className="dot">·</span>
         <span>{formatRelative(project.git.lastActivity ?? project.lastOpened)}</span>
       </span>
@@ -292,12 +314,19 @@ function Overview({ detail }: { detail: ProjectDetail }) {
       <section className="panel git-overview">
         <p className="section-label">Repository</p>
         {detail.project.git.isRepository ? (
-          <div className="fact-grid">
-            <Fact label="Branch" value={detail.project.git.branch ?? "Unknown"} />
-            <Fact label="Working tree" value={detail.project.git.dirty ? "Uncommitted changes" : "Clean"} />
-            <Fact label="Last activity" value={formatDate(detail.project.git.lastActivity)} />
-            <Fact label="Last opened" value={formatDate(detail.project.lastOpened)} />
-          </div>
+          <>
+            <div className="fact-grid">
+              <Fact label="Branch" value={detail.project.git.branch ?? "Unknown"} />
+              <Fact label="Working tree" value={detail.project.git.dirty === null ? "Unavailable" : detail.project.git.dirty ? "Uncommitted changes" : "Clean"} />
+              <Fact label="Upstream status" value={syncStatusLabel(detail.project.git)} />
+              <Fact label="Upstream" value={detail.project.git.upstream ?? "Not configured"} />
+              <Fact label="Last successful fetch" value={formatDate(detail.project.git.lastSuccessfulFetch)} />
+              <Fact label="Last activity" value={formatDate(detail.project.git.lastActivity)} />
+              <Fact label="Last opened" value={formatDate(detail.project.lastOpened)} />
+            </div>
+            {detail.project.git.fetchStatus === "fetching" && <div className="notice">Fetching all remotes in the background…</div>}
+            {detail.project.git.fetchError && <div className={`notice ${detail.project.git.fetchStatus === "noRemote" ? "" : "error"}`}>{detail.project.git.fetchError}</div>}
+          </>
         ) : (
           <StatusMessage title="Not a Git repository" body={detail.project.git.error ?? "Documentation remains available."} />
         )}
@@ -366,12 +395,19 @@ function GitPanel({ git }: { git: GitInfo }) {
   return (
     <div className="git-panel">
       {git.error && <div className="notice error">{git.error}</div>}
+      {git.fetchStatus === "fetching" && <div className="notice">Fetching all remotes in the background…</div>}
+      {git.fetchError && <div className={`notice ${git.fetchStatus === "noRemote" ? "" : "error"}`}>{git.fetchError}</div>}
       <div className="fact-grid panel compact">
         <Fact label="Branch" value={git.branch ?? "Unknown"} />
         <Fact label="Working tree" value={git.dirty === null ? "Unavailable" : git.dirty ? "Uncommitted changes" : "Clean"} />
+        <Fact label="Upstream status" value={syncStatusLabel(git)} />
+        <Fact label="Upstream branch" value={git.upstream ?? "Not configured"} />
+        <Fact label="Ahead / behind" value={git.ahead === null || git.behind === null ? "Unknown" : `${git.ahead} / ${git.behind}`} />
+        <Fact label="Last successful fetch" value={formatDate(git.lastSuccessfulFetch)} />
         <Fact label="Last activity" value={formatDate(git.lastActivity)} />
         <Fact label="Commits shown" value={String(git.recentCommits.length)} />
       </div>
+      {git.syncMessage && <div className="notice">{git.syncMessage}</div>}
       <section className="panel commits-panel">
         <p className="section-label">Recent commits</p>
         {git.recentCommits.length ? <CommitList commits={git.recentCommits} /> : <StatusMessage title="No commits to show" />}
@@ -404,6 +440,21 @@ function GitBadge({ git, verbose = false }: { git: GitInfo; verbose?: boolean })
   const label = !git.isRepository ? "No Git" : git.dirty === null ? "Git unavailable" : git.dirty ? (verbose ? "Uncommitted changes" : "Dirty") : "Clean";
   const state = !git.isRepository || git.dirty === null ? "neutral" : git.dirty ? "dirty" : "clean";
   return <span className={`git-badge ${state}`}><span />{label}</span>;
+}
+
+function syncStatusLabel(git: GitInfo): string {
+  switch (git.syncStatus) {
+    case "ahead":
+      return `Ahead by ${git.ahead ?? "?"}`;
+    case "behind":
+      return `Behind by ${git.behind ?? "?"}`;
+    case "diverged":
+      return `Diverged (${git.ahead ?? "?"} ahead, ${git.behind ?? "?"} behind)`;
+    case "synchronized":
+      return "Synchronized";
+    default:
+      return "Upstream unknown";
+  }
 }
 
 function CenteredMessage({ title, body, action }: { title: string; body?: string; action?: React.ReactNode }) {

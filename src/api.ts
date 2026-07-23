@@ -24,6 +24,10 @@ export function refreshProject(id: string): Promise<ProjectDetail> {
   return invoke("refresh_project", { id });
 }
 
+export function refreshProjects(): Promise<ProjectSummary[]> {
+  return invoke("refresh_projects");
+}
+
 export async function chooseProjectDirectory(): Promise<string | null> {
   const selected = await open({
     directory: true,
@@ -35,5 +39,11 @@ export async function chooseProjectDirectory(): Promise<string | null> {
 
 export function onProjectChanged(callback: () => void): Promise<UnlistenFn> {
   return listen("project-changed", callback);
+}
+
+export function onGitSyncChanged(callback: (projectId: string) => void): Promise<UnlistenFn> {
+  return listen<{ projectId: string }>("git-sync-changed", (event) => {
+    callback(event.payload.projectId);
+  });
 }
 
