@@ -1,6 +1,6 @@
 # Projector
 
-Projector is a lightweight local desktop application for observing software projects. Register a project directory, switch between projects, read its key Markdown files, and inspect its current Git state without running or modifying the project.
+Projector is a lightweight local desktop application for observing software projects. Register a project directory, switch between projects, read its key Markdown files, inspect its current Git state, and deliberately fast-forward a clean project from its configured upstream.
 
 ## MVP capabilities
 
@@ -9,10 +9,11 @@ Projector is a lightweight local desktop application for observing software proj
 - Render `README.md`, `TODO.md`, and work history (`WORK_HISTORY.md` or `WORKING_HISTORY.md`) from either the project root or `docs/`, using case-insensitive filename matching.
 - Show up to 25 recent commits.
 - Run `git fetch --all --prune` in the background at startup and on manual refresh, then report ahead, behind, diverged, synchronized, or unknown status.
+- Manually pull the selected project with fast-forward-only semantics when it has a checked-out upstream branch and a clean working tree.
 - Refresh automatically after changes beneath a registered directory, with a manual refresh available as a fallback.
 - Handle missing documents, non-Git folders, missing remotes or upstreams, authentication/offline failures, fetch timeouts, moved/inaccessible paths, and read errors without preventing access to the rest of the project view.
 
-The only project command Projector runs is the bounded background fetch above. It never pulls, merges, rebases, pushes, builds projects, edits working-tree files, or provides project runtime controls.
+Projector runs only two bounded Git commands: the background fetch above and an explicitly selected `git pull --ff-only --no-rebase --recurse-submodules=no`. Pull refuses dirty working trees, detached branches, missing upstreams, and histories that require a merge or rebase. Projector never pushes, checks out branches, builds projects, or provides project runtime controls.
 
 ## Stack and design
 
@@ -39,7 +40,7 @@ Missing files are shown as missing. A document path that resolves outside the re
 
 The application stores `registered-projects.json` in the operating system application-data directory for the `com.local.projector` identifier. It contains only registry version, project ID, canonical location, display name, registration time, and last-opened time. A separate `git-sync-cache.json` stores only the last successful fetch time per project. Project content and Git history are never copied into application storage.
 
-Filesystem observation is created only for registered roots. Document and Git requests use a registered project ID rather than accepting a path from the UI. Git worktrees whose `.git` metadata resolves outside the registered root are intentionally not inspected in the MVP.
+Filesystem observation is created only for registered roots. Document and Git requests, including pull, use a registered project ID rather than accepting a path from the UI. Git worktrees whose `.git` metadata resolves outside the registered root are intentionally not inspected in the MVP.
 
 ## Development
 

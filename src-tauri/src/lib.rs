@@ -153,6 +153,25 @@ async fn refresh_projects(
     inspect_projects(entries, state.git_sync.clone()).await
 }
 
+#[tauri::command]
+async fn pull_project(id: Uuid, state: State<'_, AppState>) -> Result<ProjectDetail, String> {
+    let entry = state
+        .registry
+        .lock()
+        .map_err(|_| "The project registry is unavailable".to_string())?
+        .find(id)
+        .cloned()
+        .ok_or_else(|| format!("Unknown project id {id}"))?;
+    let git_sync = state.git_sync.clone();
+
+    tauri::async_runtime::spawn_blocking(move || {
+        git_sync.pull(&entry)?;
+        Ok(observer::detail(&entry, &git_sync.snapshot(entry.id)))
+    })
+    .await
+    .map_err(|error| format!("Unable to pull project: {error}"))?
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -185,7 +204,8 @@ pub fn run() {
             remove_project,
             open_project,
             refresh_project,
-            refresh_projects
+            refresh_projects,
+            pull_project
         ])
         .run(tauri::generate_context!())
         .expect("error while running Projector");

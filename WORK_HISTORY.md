@@ -1,5 +1,15 @@
 # Working history
 
+## 2026-07-23 — Manual fast-forward pull
+
+- Added a per-project Pull button backed by a registered-ID-only, 30-second `git pull --ff-only` workflow.
+- Pull now refuses dirty working trees, detached branches, missing upstreams, concurrent Git synchronization, and histories that cannot fast-forward.
+- Added backend and interface tests for pull eligibility, invocation, and safe failure messaging.
+
+## 2026-07-23 — Contributor guidance
+
+- Added repository-wide `AGENTS.md` guidance covering Projector's architecture, observation boundary, narrow Git fetch exception, verification gates, and documentation expectations.
+
 ## 2026-07-23 — Git synchronization awareness
 
 - Added non-blocking `git fetch --all --prune` at startup and on manual refresh, with duplicate-fetch suppression and a 30-second timeout.

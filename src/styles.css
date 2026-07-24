@@ -51,6 +51,7 @@ button:focus-visible { outline: 3px solid rgba(44, 106, 79, .28); outline-offset
 .header-actions { display: flex; align-items: center; gap: 10px; }
 .secondary-button { padding: 9px 14px; color: #34433a; background: #fff; border: 1px solid #d8d5cd; }
 .secondary-button:disabled { cursor: wait; opacity: .55; }
+.pull-button:disabled { cursor: not-allowed; }
 .text-button { padding: 9px 8px; background: transparent; border: 0; }
 .text-button.danger { color: #a0413b; }
 .tabs { display: flex; gap: 4px; padding: 0 40px; border-bottom: 1px solid #dedbd3; }

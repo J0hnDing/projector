@@ -28,6 +28,10 @@ export function refreshProjects(): Promise<ProjectSummary[]> {
   return invoke("refresh_projects");
 }
 
+export function pullProject(id: string): Promise<ProjectDetail> {
+  return invoke("pull_project", { id });
+}
+
 export async function chooseProjectDirectory(): Promise<string | null> {
   const selected = await open({
     directory: true,

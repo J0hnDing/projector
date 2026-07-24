@@ -32,6 +32,7 @@ export default function App() {
   const [tab, setTab] = useState<Tab>("overview");
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [pulling, setPulling] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const selectedIdRef = useRef<string | null>(null);
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -173,6 +174,22 @@ export default function App() {
     }
   };
 
+  const pull = async () => {
+    const id = selectedIdRef.current;
+    if (!id) return;
+    try {
+      setError(null);
+      setPulling(true);
+      const nextDetail = await api.pullProject(id);
+      setDetail(nextDetail);
+      await loadProjects();
+    } catch (reason) {
+      setError(messageFrom(reason));
+    } finally {
+      setPulling(false);
+    }
+  };
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -224,8 +241,10 @@ export default function App() {
             detail={detail}
             tab={tab}
             refreshing={refreshing}
+            pulling={pulling}
             onTab={setTab}
             onRefresh={() => void refresh()}
+            onPull={() => void pull()}
             onRemove={() => void remove()}
           />
         ) : (
@@ -256,14 +275,17 @@ function ProjectListItem({ project, selected, onSelect }: { project: ProjectSumm
   );
 }
 
-function ProjectView({ detail, tab, refreshing, onTab, onRefresh, onRemove }: {
+function ProjectView({ detail, tab, refreshing, pulling, onTab, onRefresh, onPull, onRemove }: {
   detail: ProjectDetail;
   tab: Tab;
   refreshing: boolean;
+  pulling: boolean;
   onTab: (tab: Tab) => void;
   onRefresh: () => void;
+  onPull: () => void;
   onRemove: () => void;
 }) {
+  const pullUnavailableReason = getPullUnavailableReason(detail.project.git);
   return (
     <div className="project-view">
       <header className="project-header">
@@ -275,6 +297,14 @@ function ProjectView({ detail, tab, refreshing, onTab, onRefresh, onRemove }: {
           <p title={detail.project.path}>{detail.project.path}</p>
         </div>
         <div className="header-actions">
+          <button
+            className="secondary-button pull-button"
+            onClick={onPull}
+            disabled={pulling || pullUnavailableReason !== null}
+            title={pullUnavailableReason ?? "Fast-forward the current branch from its upstream"}
+          >
+            {pulling ? "Pulling…" : "Pull"}
+          </button>
           <button className="secondary-button" onClick={onRefresh} disabled={refreshing}>
             {refreshing ? "Refreshing…" : "Refresh"}
           </button>
@@ -455,6 +485,15 @@ function syncStatusLabel(git: GitInfo): string {
     default:
       return "Upstream unknown";
   }
+}
+
+function getPullUnavailableReason(git: GitInfo): string | null {
+  if (!git.isRepository) return "Pull is available only for Git repositories";
+  if (git.fetchStatus === "fetching") return "Wait for the current Git fetch to finish";
+  if (!git.branch || git.branch.startsWith("Detached at ")) return "Pull requires a checked-out branch";
+  if (!git.upstream) return "Pull requires an upstream branch";
+  if (git.dirty !== false) return "Pull requires a clean working tree";
+  return null;
 }
 
 function CenteredMessage({ title, body, action }: { title: string; body?: string; action?: React.ReactNode }) {

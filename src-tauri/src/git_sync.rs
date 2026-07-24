@@ -18,6 +18,7 @@ use uuid::Uuid;
 use crate::models::{GitFetchStatus, RegistryEntry};
 
 const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
+const PULL_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Debug, Default)]
 pub struct GitFetchSnapshot {
@@ -132,6 +133,35 @@ impl GitSyncManager {
                 },
             );
         });
+    }
+
+    pub fn pull(&self, entry: &RegistryEntry) -> Result<(), String> {
+        let mut active = self
+            .inner
+            .active
+            .lock()
+            .map_err(|_| "Git synchronization is unavailable".to_string())?;
+        if !active.insert(entry.id) {
+            return Err("Git synchronization is already in progress for this project.".into());
+        }
+        drop(active);
+
+        let outcome = pull_repository(&entry.path, PULL_TIMEOUT);
+        if let Ok(mut active) = self.inner.active.lock() {
+            active.remove(&entry.id);
+        }
+        if outcome.is_ok() {
+            self.update_state(
+                entry.id,
+                |state| {
+                    state.status = GitFetchStatus::Succeeded;
+                    state.last_successful_fetch = Some(Utc::now());
+                    state.error = None;
+                },
+                true,
+            );
+        }
+        outcome
     }
 
     fn finish_fetch(&self, id: Uuid, outcome: FetchOutcome) {
@@ -280,6 +310,117 @@ fn fetch_repository(root: &Path, timeout: Duration) -> FetchOutcome {
     }
 }
 
+fn pull_repository(root: &Path, timeout: Duration) -> Result<(), String> {
+    let repo = Repository::open(root)
+        .map_err(|error| format!("The repository is unavailable: {error}"))?;
+    if !repository_is_within_root(&repo, root) {
+        return Err("Git metadata is outside the registered project directory.".into());
+    }
+
+    let head = repo
+        .head()
+        .map_err(|_| "The current Git branch could not be determined.".to_string())?;
+    if !head.is_branch() {
+        return Err("Pull is unavailable while the repository has a detached HEAD.".into());
+    }
+    let branch_name = head
+        .shorthand()
+        .map_err(|_| "The current Git branch could not be determined.".to_string())?;
+    repo.find_branch(branch_name, git2::BranchType::Local)
+        .and_then(|branch| branch.upstream())
+        .map_err(|_| "The current branch does not have an upstream branch.".to_string())?;
+
+    let mut status_options = git2::StatusOptions::new();
+    status_options
+        .include_ignored(false)
+        .include_untracked(true)
+        .recurse_untracked_dirs(true);
+    let dirty = repo
+        .statuses(Some(&mut status_options))
+        .map_err(|error| format!("Unable to inspect the working tree: {error}"))?
+        .iter()
+        .next()
+        .is_some();
+    if dirty {
+        return Err(
+            "Pull requires a clean working tree. Commit, stash, or discard local changes first."
+                .into(),
+        );
+    }
+    drop(head);
+    drop(repo);
+
+    let mut child = Command::new("git")
+        .args([
+            "pull",
+            "--ff-only",
+            "--no-rebase",
+            "--recurse-submodules=no",
+        ])
+        .current_dir(root)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GCM_INTERACTIVE", "Never")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("Unable to start Git pull: {error}"))?;
+
+    let stderr = child.stderr.take();
+    let stderr_reader = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        if let Some(mut stderr) = stderr {
+            let _ = stderr.read_to_end(&mut bytes);
+        }
+        String::from_utf8_lossy(&bytes).trim().to_string()
+    });
+    let started = Instant::now();
+    let exit_status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if started.elapsed() < timeout => thread::sleep(Duration::from_millis(100)),
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("Unable to monitor Git pull: {error}"));
+            }
+        }
+    };
+    if exit_status.is_none() {
+        drop(stderr_reader);
+        return Err(format!(
+            "Git pull timed out after {} seconds.",
+            timeout.as_secs()
+        ));
+    }
+    let stderr = stderr_reader.join().unwrap_or_default();
+    match exit_status {
+        Some(status) if status.success() => Ok(()),
+        Some(_) => Err(classify_pull_failure(&stderr)),
+        None => unreachable!("the timeout case returns before reading stderr"),
+    }
+}
+
+fn classify_pull_failure(stderr: &str) -> String {
+    let lower = stderr.to_lowercase();
+    if lower.contains("not possible to fast-forward")
+        || lower.contains("cannot fast-forward")
+        || lower.contains("diverging branches")
+    {
+        "The branch has diverged from its upstream, so it cannot be fast-forwarded.".into()
+    } else {
+        classify_fetch_failure(stderr)
+            .error
+            .unwrap_or_else(|| "Git pull failed.".into())
+            .replace("fetch", "pull")
+    }
+}
+
 fn classify_fetch_failure(stderr: &str) -> FetchOutcome {
     let lower = stderr.to_lowercase();
     let status = if [
@@ -336,6 +477,21 @@ fn failed(message: String) -> FetchOutcome {
 mod tests {
     use super::*;
 
+    fn git(root: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
     #[test]
     fn classifies_authentication_and_offline_failures() {
         assert_eq!(
@@ -359,5 +515,78 @@ mod tests {
         let outcome = fetch_repository(temp.path(), Duration::from_secs(1));
         assert_eq!(outcome.status, GitFetchStatus::NoRemote);
         assert!(outcome.error.unwrap().contains("No Git remotes"));
+    }
+
+    #[test]
+    fn pull_requires_an_upstream_branch() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = Repository::init(temp.path()).unwrap();
+        let signature =
+            git2::Signature::now("Projector Test", "projector@example.invalid").unwrap();
+        let tree_id = {
+            let mut index = repo.index().unwrap();
+            index.write_tree().unwrap()
+        };
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("HEAD"), &signature, &signature, "Initial", &tree, &[])
+            .unwrap();
+        drop(tree);
+        drop(repo);
+
+        let error = pull_repository(temp.path(), Duration::from_secs(1)).unwrap_err();
+        assert!(error.contains("does not have an upstream"));
+    }
+
+    #[test]
+    fn pull_failure_reports_fast_forward_refusal() {
+        assert_eq!(
+            classify_pull_failure("fatal: Not possible to fast-forward, aborting."),
+            "The branch has diverged from its upstream, so it cannot be fast-forwarded."
+        );
+    }
+
+    #[test]
+    fn pull_fast_forwards_from_a_local_remote() {
+        let temp = tempfile::tempdir().unwrap();
+        let remote = temp.path().join("remote.git");
+        let source = temp.path().join("source");
+        let checkout = temp.path().join("checkout");
+        fs::create_dir(&source).unwrap();
+
+        git(temp.path(), &["init", "--bare", remote.to_str().unwrap()]);
+        git(&source, &["init", "-b", "main"]);
+        git(&source, &["config", "user.name", "Projector Test"]);
+        git(
+            &source,
+            &["config", "user.email", "projector@example.invalid"],
+        );
+        fs::write(source.join("version.txt"), "one").unwrap();
+        git(&source, &["add", "version.txt"]);
+        git(&source, &["commit", "-m", "Initial"]);
+        git(
+            &source,
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
+        git(&source, &["push", "-u", "origin", "main"]);
+        git(&remote, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+        git(
+            temp.path(),
+            &[
+                "clone",
+                remote.to_str().unwrap(),
+                checkout.to_str().unwrap(),
+            ],
+        );
+
+        fs::write(source.join("version.txt"), "two").unwrap();
+        git(&source, &["add", "version.txt"]);
+        git(&source, &["commit", "-m", "Update"]);
+        git(&source, &["push"]);
+
+        pull_repository(&checkout, Duration::from_secs(5)).unwrap();
+        assert_eq!(
+            fs::read_to_string(checkout.join("version.txt")).unwrap(),
+            "two"
+        );
     }
 }

@@ -13,6 +13,7 @@ vi.mock("./api", () => ({
   openProject: vi.fn(),
   refreshProject: vi.fn(),
   refreshProjects: vi.fn(),
+  pullProject: vi.fn(),
   chooseProjectDirectory: vi.fn(),
   onProjectChanged: vi.fn().mockResolvedValue(() => undefined),
   onGitSyncChanged: vi.fn().mockResolvedValue(() => undefined),
@@ -55,6 +56,7 @@ describe("App", () => {
     vi.mocked(api.openProject).mockReset();
     vi.mocked(api.refreshProject).mockReset();
     vi.mocked(api.refreshProjects).mockReset();
+    vi.mocked(api.pullProject).mockReset();
     vi.mocked(api.listProjects).mockResolvedValue([]);
     vi.mocked(api.refreshProjects).mockResolvedValue([]);
   });
@@ -105,6 +107,34 @@ describe("App", () => {
     await screen.findByRole("heading", { name: "Example" });
     await userEvent.click(screen.getByRole("button", { name: "Refresh" }));
     await waitFor(() => expect(api.refreshProjects).toHaveBeenCalledOnce());
+  });
+
+  it("manually pulls the selected project", async () => {
+    vi.mocked(api.listProjects).mockResolvedValue([detail.project]);
+    vi.mocked(api.openProject).mockResolvedValue(detail);
+    vi.mocked(api.pullProject).mockResolvedValue(detail);
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "Example" });
+    await userEvent.click(screen.getByRole("button", { name: "Pull" }));
+    await waitFor(() => expect(api.pullProject).toHaveBeenCalledWith(detail.project.id));
+  });
+
+  it("disables pull when the working tree is dirty", async () => {
+    const dirtyDetail = {
+      ...detail,
+      project: {
+        ...detail.project,
+        git: { ...detail.project.git, dirty: true },
+      },
+    };
+    vi.mocked(api.listProjects).mockResolvedValue([dirtyDetail.project]);
+    vi.mocked(api.openProject).mockResolvedValue(dirtyDetail);
+    render(<App />);
+
+    const pull = await screen.findByRole("button", { name: "Pull" });
+    expect(pull).toBeDisabled();
+    expect(pull).toHaveAttribute("title", "Pull requires a clean working tree");
   });
 });
 
