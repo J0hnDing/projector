@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -46,6 +46,154 @@ pub struct ProjectSummary {
 pub struct ProjectDetail {
     pub project: ProjectSummary,
     pub documents: ProjectDocuments,
+    pub state: ProjectState,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectState {
+    pub todos: TodoDocument,
+    pub working_history: WorkHistoryDocument,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TodoDocument {
+    pub relative_path: Option<String>,
+    pub items: Vec<TodoItem>,
+    pub warnings: Vec<ValidationWarning>,
+    pub preserved_content: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TodoItem {
+    pub id: String,
+    pub title: String,
+    pub status: TodoStatus,
+    pub priority: TodoPriority,
+    pub area: String,
+    pub dependencies: Vec<String>,
+    pub rationale: String,
+    pub acceptance_criteria: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum TodoStatus {
+    Planned,
+    Blocked,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum TodoPriority {
+    Critical,
+    High,
+    Medium,
+    Low,
+}
+
+impl TodoPriority {
+    pub fn rank(self) -> u8 {
+        match self {
+            Self::Critical => 0,
+            Self::High => 1,
+            Self::Medium => 2,
+            Self::Low => 3,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkHistoryDocument {
+    pub relative_path: Option<String>,
+    pub entries: Vec<WorkHistoryEntry>,
+    pub categories: Vec<WorkCategory>,
+    pub areas: Vec<String>,
+    pub warnings: Vec<ValidationWarning>,
+    pub preserved_content: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkHistoryEntry {
+    pub occurred_at: NaiveDateTime,
+    pub title: String,
+    pub category: WorkCategory,
+    pub related_todos: Vec<String>,
+    pub area: String,
+    pub summary: String,
+    pub limitations: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "lowercase")]
+pub enum WorkCategory {
+    Feature,
+    Bugfix,
+    Refactor,
+    Test,
+    Documentation,
+    Research,
+    Decision,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ValidationWarning {
+    pub code: String,
+    pub message: String,
+    pub item_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AddTodoInput {
+    pub title: String,
+    pub priority: TodoPriority,
+    pub area: String,
+    #[serde(default)]
+    pub dependencies: Vec<String>,
+    pub rationale: String,
+    pub acceptance_criteria: String,
+    #[serde(default = "default_todo_status")]
+    pub status: TodoStatus,
+}
+
+fn default_todo_status() -> TodoStatus {
+    TodoStatus::Planned
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompleteTodoInput {
+    pub todo_id: String,
+    pub history_title: String,
+    pub category: WorkCategory,
+    pub area: String,
+    pub summary: String,
+    pub limitations: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AddWorkHistoryInput {
+    pub title: String,
+    pub category: WorkCategory,
+    #[serde(default)]
+    pub related_todos: Vec<String>,
+    pub area: String,
+    pub summary: String,
+    pub limitations: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompleteTodoResult {
+    pub completed_todo: TodoItem,
+    pub history_entry: WorkHistoryEntry,
 }
 
 #[derive(Clone, Debug, Serialize)]

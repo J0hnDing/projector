@@ -1,25 +1,92 @@
 # Projector
 
-Projector is a lightweight local desktop application for observing software projects. Register a project directory, switch between projects, read its key Markdown files, inspect its current Git state, and deliberately fast-forward a clean project from its configured upstream.
+Projector is a lightweight local desktop project manager shared by people and software agents. Register a project directory, inspect structured TODOs and working history, read its README, observe Git state, and deliberately fast-forward a clean project from its configured upstream. Markdown files remain the human-readable source of truth.
 
 ## MVP capabilities
 
 - Register and remove local project directories. Removing a project only removes its registry entry.
 - Show project name, path, Git branch, clean/dirty state, upstream relationship, last successful fetch, last repository activity, and last-opened time.
 - Render `README.md`, `TODO.md`, and work history (`WORK_HISTORY.md` or `WORKING_HISTORY.md`) from either the project root or `docs/`, using case-insensitive filename matching.
+- Parse TODOs and working history into validated structured records while preserving malformed or unrecognized source text.
+- Rank TODOs by critical, high, medium, then low; show blocked state, dependency relationships, missing references, and cycles.
+- Group and filter working history by category and area, filter by related TODO, and link related records.
+- Allow local agents to add TODOs, complete TODOs atomically with history, and add history through a loopback-only API.
 - Show up to 25 recent commits.
 - Run `git fetch --all --prune` in the background at startup and on manual refresh, then report ahead, behind, diverged, synchronized, or unknown status.
 - Manually pull the selected project with fast-forward-only semantics when it has a checked-out upstream branch and a clean working tree.
 - Refresh automatically after changes beneath a registered directory, with a manual refresh available as a fallback.
 - Handle missing documents, non-Git folders, missing remotes or upstreams, authentication/offline failures, fetch timeouts, moved/inaccessible paths, and read errors without preventing access to the rest of the project view.
 
-Projector runs only two bounded Git commands: the background fetch above and an explicitly selected `git pull --ff-only --no-rebase --recurse-submodules=no`. Pull refuses dirty working trees, detached branches, missing upstreams, and histories that require a merge or rebase. Projector never pushes, checks out branches, builds projects, or provides project runtime controls.
+Projector runs only two bounded Git commands: the background fetch above and an explicitly selected `git pull --ff-only --no-rebase --recurse-submodules=no`. Pull refuses dirty working trees, detached branches, missing upstreams, and histories that require a merge or rebase. Projector never pushes, checks out branches, builds projects, provides project runtime controls, or exposes generic file or shell operations.
 
 ## Stack and design
 
-The desktop shell is [Tauri 2](https://v2.tauri.app/) with a React and TypeScript interface built by Vite. Tauri uses the operating system webview instead of bundling a browser engine. Rust owns the local trust boundary: it validates and stores registered paths, reads recognized documents, observes Git through libgit2, coordinates bounded Git fetches, and emits change events. The UI receives structured data through a small set of Tauri commands and has no general filesystem, shell, or process permission.
+The desktop shell is [Tauri 2](https://v2.tauri.app/) with a React and TypeScript interface built by Vite. Tauri uses the operating system webview instead of bundling a browser engine. Rust owns the local trust boundary: it validates and stores registered paths, parses and atomically updates recognized state documents, observes Git through libgit2, coordinates bounded Git fetches, and emits change events. One project-state service supplies the parser, validator, deterministic writer, concurrency lock, and mutation logic used by the desktop and local API. The UI has no general filesystem, shell, or process permission.
 
-This split leaves a clear boundary for later services while keeping the observation MVP small. Any future runtime-management service must be separate and explicitly permissioned; it is not present in this milestone.
+This split leaves a clear boundary for later services while keeping mutation authority narrow. Any future runtime-management service must be separate and explicitly permissioned; it is not present in this milestone.
+
+## Structured project state
+
+`TODO.md` contains open work. Each item uses this deterministic syntax:
+
+```markdown
+## TODO-001: Display Git status
+
+- Status: planned
+- Priority: high
+- Area: git-observer
+- Dependencies: TODO-000
+- Rationale: Users should understand repository activity without opening a terminal.
+
+-Acceptance Criteria:
+Display the current branch, working-tree status, recent commits, and last repository activity.
+```
+
+IDs are stable and unique. Status is `planned` or `blocked`; priority is `critical`, `high`, `medium`, or `low`; dependencies are comma-separated IDs or `none`. A completed TODO is removed, its ID is removed from remaining dependency lists as a satisfied prerequisite, and a corresponding history entry is appended. Acceptance criteria is plain Markdown, not a checklist or percentage calculation.
+
+`WORK_HISTORY.md` is append-oriented:
+
+```markdown
+## 2026-07-23 16:30 — Git status display implemented
+
+- Category: feature
+- Related TODOs: TODO-001
+- Area: git-observer
+
+### Summary
+
+Implemented branch, working-tree, recent commit, and repository activity displays.
+
+### Limitations
+
+Submodule status is not yet supported.
+```
+
+Categories are `feature`, `bugfix`, `refactor`, `test`, `documentation`, `research`, or `decision`. The UI displays entries newest first. Future malformed content is retained as preserved unrecognized content and exposed alongside validation warnings.
+
+## Local agent API
+
+While Projector is running, its JSON API is bound only to `http://127.0.0.1:48721/v1`. `GET /projects` returns registered project IDs and `GET /projects/{projectId}/state` reads structured state. The only mutations are:
+
+- `POST /add_todo` (`add_todo`)
+- `POST /complete_todo` (`complete_todo`)
+- `POST /add_work_history` (`add_work_history`)
+
+Each JSON mutation includes `projectId`. `add_todo` accepts `title`, `priority`, `area`, `dependencies`, `rationale`, `acceptanceCriteria`, and optional `status`. `complete_todo` accepts `todoId`, `historyTitle`, `category`, `area`, `summary`, and `limitations`. `add_work_history` accepts `title`, `category`, `relatedTodos`, `area`, `summary`, and `limitations`.
+
+The API rejects unknown registry IDs and never accepts a filesystem path. Completion validates the TODO and its dependencies, updates both documents under one service lock, rolls back the first replacement if the second fails, and returns both records. There is no arbitrary Markdown, filesystem, shell, Git, or runtime endpoint. The HTTP contract is intentionally small so a later MCP adapter can remain a thin compatibility layer.
+
+Agents working in registered projects must use these operations rather than directly modifying `TODO.md` or `WORK_HISTORY.md`.
+
+## Project migration
+
+Run the bounded migration from the Projector repository:
+
+```powershell
+cargo run --manifest-path src-tauri/Cargo.toml --bin projector-migrate
+```
+
+It scans only direct project directories beneath the approved `C:\Users\John\Projects` root and only recognized root or `docs/` state files. It skips dependency, generated, cache, virtual-environment, and Git-internal trees by never descending into them. Before changing a state or `AGENTS.md` file it creates an adjacent `.projector-backup`, converts conservatively, atomically replaces the file, parses the result with Projector's production parser, and restores the original if validation fails. Repeated runs are idempotent. Unknown values use `unknown` or `none`; original legacy text remains available in the adjacent backups. `MIGRATION_REPORT.md` records outcomes and warnings.
 
 ## Project document discovery
 
@@ -76,4 +143,7 @@ The project-local `@tauri-apps/cli` is used; a global Tauri CLI installation is 
 - Git submodules and linked worktree metadata outside the registered directory are not traversed.
 - The supported filename aliases and root-before-`docs/` lookup order are fixed for the MVP.
 - The registry has no import/export, path relocation, or custom project naming yet.
-- This milestone has no project execution, runtime health monitoring, agent API, cloud synchronization, analytics, or team features.
+- The loopback API is available only while the Projector desktop process is running and has no remote transport.
+- Multi-file completion provides in-process rollback if a replacement fails; it does not claim a distributed transaction across storage devices.
+- Migrated legacy entries without a source time use `00:00`; absent areas use `unknown`; absent limitations use `none`.
+- This milestone has no project execution, runtime health monitoring, arbitrary file editing, MCP adapter, cloud synchronization, analytics, or team features.

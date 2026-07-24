@@ -1,57 +1,23 @@
-## 2026-07-23 00:00 — Manual fast-forward pull
+# Working history
 
-- Category: feature
-- Related TODOs: none
-- Area: unknown
-
-### Summary
+## 2026-07-23 — Manual fast-forward pull
 
 - Added a per-project Pull button backed by a registered-ID-only, 30-second `git pull --ff-only` workflow.
 - Pull now refuses dirty working trees, detached branches, missing upstreams, concurrent Git synchronization, and histories that cannot fast-forward.
 - Added backend and interface tests for pull eligibility, invocation, and safe failure messaging.
 
-### Limitations
-
-none
-
-## 2026-07-23 00:00 — Contributor guidance
-
-- Category: feature
-- Related TODOs: none
-- Area: unknown
-
-### Summary
+## 2026-07-23 — Contributor guidance
 
 - Added repository-wide `AGENTS.md` guidance covering Projector's architecture, observation boundary, narrow Git fetch exception, verification gates, and documentation expectations.
 
-### Limitations
-
-none
-
-## 2026-07-23 00:00 — Git synchronization awareness
-
-- Category: feature
-- Related TODOs: none
-- Area: unknown
-
-### Summary
+## 2026-07-23 — Git synchronization awareness
 
 - Added non-blocking `git fetch --all --prune` at startup and on manual refresh, with duplicate-fetch suppression and a 30-second timeout.
 - Kept cached local Git information visible while fetches run and pushed completion updates to the UI.
 - Added upstream ahead/behind/diverged/synchronized classification, persisted last-success timestamps, and graceful remote, authentication, offline, timeout, and missing-upstream states.
 - Added Rust tests for status classification and fetch failure handling.
 
-### Limitations
-
-none
-
-## 2026-07-22 00:00 — Initial MVP
-
-- Category: feature
-- Related TODOs: none
-- Area: unknown
-
-### Summary
+## 2026-07-22 — Initial MVP
 
 - Bootstrapped Projector as a React, TypeScript, and Tauri 2 desktop application.
 - Added a local JSON registry containing only canonical project locations and app metadata.
@@ -65,21 +31,3 @@ none
 - Added case-insensitive document discovery and support for both `WORK_HISTORY.md` and `WORKING_HISTORY.md`.
 - Added sanitized embedded HTML rendering for common README layout markup.
 - Configured Windows release builds as GUI applications so they do not open a console window.
-
-### Limitations
-
-none
-
-## 2026-07-23 22:40 — Structured project management and local agent API
-
-- Category: feature
-- Related TODOs: none
-- Area: project-state-management
-
-### Summary
-
-Added one shared Rust parser, validator, deterministic writer, and locked mutation service for structured TODO and working-history Markdown. Added ranked TODO and dependency views, validation warnings, working-history grouping and filters, and related-TODO links. Exposed loopback-only add_todo, complete_todo, and add_work_history operations for registered projects. Migrated Eidolon, Epistome, and Projector with backups, validation, rollback, idempotency, and concise agent instructions. Verification passed: 10 frontend tests, frontend production build, 28 Rust tests, cargo fmt check, and the Tauri no-bundle release build.
-
-### Limitations
-
-The API is available only while Projector runs. There is no MCP adapter, remote transport, generic file editing, project execution, or arbitrary shell access. Conservatively migrated unknown fields remain explicit unknown values.

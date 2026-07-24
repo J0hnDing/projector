@@ -52,5 +52,65 @@ export interface ProjectDocuments {
 export interface ProjectDetail {
   project: ProjectSummary;
   documents: ProjectDocuments;
+  state: ProjectState;
+}
+
+export type TodoStatus = "planned" | "blocked";
+export type TodoPriority = "critical" | "high" | "medium" | "low";
+export type WorkCategory =
+  | "feature"
+  | "bugfix"
+  | "refactor"
+  | "test"
+  | "documentation"
+  | "research"
+  | "decision";
+
+export interface ValidationWarning {
+  code: string;
+  message: string;
+  itemId: string | null;
+}
+
+export interface TodoItem {
+  id: string;
+  title: string;
+  status: TodoStatus;
+  priority: TodoPriority;
+  area: string;
+  dependencies: string[];
+  rationale: string;
+  acceptanceCriteria: string;
+}
+
+export interface TodoDocument {
+  relativePath: string | null;
+  items: TodoItem[];
+  warnings: ValidationWarning[];
+  preservedContent: string | null;
+}
+
+export interface WorkHistoryEntry {
+  occurredAt: string;
+  title: string;
+  category: WorkCategory;
+  relatedTodos: string[];
+  area: string;
+  summary: string;
+  limitations: string;
+}
+
+export interface WorkHistoryDocument {
+  relativePath: string | null;
+  entries: WorkHistoryEntry[];
+  categories: WorkCategory[];
+  areas: string[];
+  warnings: ValidationWarning[];
+  preservedContent: string | null;
+}
+
+export interface ProjectState {
+  todos: TodoDocument;
+  workingHistory: WorkHistoryDocument;
 }
 

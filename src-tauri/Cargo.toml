@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "A local desktop observer for software projects"
 authors = ["Projector contributors"]
 edition = "2024"
+default-run = "projector"
 
 [lib]
 name = "projector_lib"
@@ -14,6 +15,7 @@ tauri-build = { version = "2.5.6", features = [] }
 
 [dependencies]
 chrono = { version = "0.4.42", features = ["serde"] }
+axum = "0.8.6"
 git2 = "0.21.0"
 notify = "8.2.0"
 serde = { version = "1.0.228", features = ["derive"] }
@@ -21,8 +23,9 @@ serde_json = "1.0.149"
 tauri = { version = "2.11.5", features = [] }
 tauri-plugin-dialog = "2.7.2"
 thiserror = "2.0.18"
+tempfile = "3.24.0"
+tokio = { version = "1.48.0", features = ["macros", "net", "rt-multi-thread"] }
 uuid = { version = "1.20.0", features = ["serde", "v4"] }
 
 [dev-dependencies]
-tempfile = "3.24.0"
-
+tower = { version = "0.5.2", features = ["util"] }

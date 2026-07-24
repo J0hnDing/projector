@@ -10,7 +10,8 @@ use git2::{BranchType, ErrorCode, Repository, StatusOptions};
 use crate::git_sync::GitFetchSnapshot;
 use crate::models::{
     DocumentContent, DocumentStatus, GitCommit, GitInfo, GitSyncStatus, ProjectDetail,
-    ProjectDocuments, ProjectSummary, RegistryEntry,
+    ProjectDocuments, ProjectState, ProjectSummary, RegistryEntry, TodoDocument, ValidationWarning,
+    WorkHistoryDocument,
 };
 
 const MAX_DOCUMENT_BYTES: u64 = 2 * 1024 * 1024;
@@ -31,6 +32,32 @@ pub fn detail(entry: &RegistryEntry, fetch: &GitFetchSnapshot) -> ProjectDetail 
     ProjectDetail {
         project: summarize(entry, fetch),
         documents: observe_documents(&entry.path),
+        state: crate::project_state::inspect_project_state(&entry.path).unwrap_or_else(|error| {
+            ProjectState {
+                todos: TodoDocument {
+                    relative_path: None,
+                    items: Vec::new(),
+                    warnings: vec![ValidationWarning {
+                        code: "state_unavailable".into(),
+                        message: error.to_string(),
+                        item_id: None,
+                    }],
+                    preserved_content: None,
+                },
+                working_history: WorkHistoryDocument {
+                    relative_path: None,
+                    entries: Vec::new(),
+                    categories: Vec::new(),
+                    areas: Vec::new(),
+                    warnings: vec![ValidationWarning {
+                        code: "state_unavailable".into(),
+                        message: error.to_string(),
+                        item_id: None,
+                    }],
+                    preserved_content: None,
+                },
+            }
+        }),
     }
 }
 

@@ -2,7 +2,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import App, { DocumentPanel } from "./App";
+import App, { DocumentPanel, HistoryPanel, TodoPanel } from "./App";
 import * as api from "./api";
 import type { ProjectDetail } from "./types";
 
@@ -47,6 +47,22 @@ const detail: ProjectDetail = {
     readme: { name: "README.md", relativePath: "README.md", status: "available", content: "# Hello", modifiedAt: null, truncated: false, error: null },
     todo: { name: "TODO.md", relativePath: null, status: "missing", content: null, modifiedAt: null, truncated: false, error: null },
     workingHistory: { name: "WORK_HISTORY.md", relativePath: null, status: "missing", content: null, modifiedAt: null, truncated: false, error: null },
+  },
+  state: {
+    todos: {
+      relativePath: null,
+      items: [],
+      warnings: [],
+      preservedContent: null,
+    },
+    workingHistory: {
+      relativePath: null,
+      entries: [],
+      categories: [],
+      areas: [],
+      warnings: [],
+      preservedContent: null,
+    },
   },
 };
 
@@ -159,5 +175,87 @@ describe("DocumentPanel", () => {
     expect(content.closest("div")).toHaveAttribute("align", "center");
     expect(document.querySelector("script")).not.toBeInTheDocument();
     expect(screen.queryByText(/unsafe/)).not.toBeInTheDocument();
+  });
+});
+
+describe("structured project state", () => {
+  it("shows ranked TODO fields, dependencies, and validation warnings", () => {
+    render(
+      <TodoPanel
+        source={{ ...detail.documents.todo, status: "available", relativePath: "TODO.md" }}
+        document={{
+          relativePath: "TODO.md",
+          items: [
+            {
+              id: "TODO-001",
+              title: "Ship state management",
+              status: "blocked",
+              priority: "critical",
+              area: "project-state",
+              dependencies: ["TODO-999"],
+              rationale: "Agents need one safe contract.",
+              acceptanceCriteria: "The parser and writer agree.",
+            },
+          ],
+          warnings: [
+            {
+              code: "missing_dependency",
+              message: "Dependency TODO-999 does not exist in this project.",
+              itemId: "TODO-001",
+            },
+          ],
+          preservedContent: "Legacy note retained.",
+        }}
+      />,
+    );
+
+    expect(screen.getByRole("heading", { name: "Ship state management" })).toBeInTheDocument();
+    expect(screen.getByText("critical")).toBeInTheDocument();
+    expect(screen.getByText("blocked")).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("TODO-999");
+    expect(screen.getByText("Preserved unrecognized source content")).toBeInTheDocument();
+  });
+
+  it("filters and groups working history while linking related TODOs", async () => {
+    const onTodo = vi.fn();
+    render(
+      <HistoryPanel
+        source={{ ...detail.documents.workingHistory, status: "available", relativePath: "WORK_HISTORY.md" }}
+        onTodo={onTodo}
+        document={{
+          relativePath: "WORK_HISTORY.md",
+          categories: ["feature", "bugfix"],
+          areas: ["project-state", "ui"],
+          warnings: [],
+          preservedContent: null,
+          entries: [
+            {
+              occurredAt: "2026-07-23T16:30:00",
+              title: "State API implemented",
+              category: "feature",
+              relatedTodos: ["TODO-001"],
+              area: "project-state",
+              summary: "Added the API.",
+              limitations: "none",
+            },
+            {
+              occurredAt: "2026-07-23T17:00:00",
+              title: "UI fixed",
+              category: "bugfix",
+              relatedTodos: [],
+              area: "ui",
+              summary: "Fixed the UI.",
+              limitations: "none",
+            },
+          ],
+        }}
+      />,
+    );
+
+    await userEvent.selectOptions(screen.getByLabelText("Category"), "feature");
+    expect(screen.getByRole("heading", { name: "State API implemented" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "UI fixed" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "TODO-001" }));
+    expect(onTodo).toHaveBeenCalledWith("TODO-001");
   });
 });

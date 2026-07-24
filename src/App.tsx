@@ -5,7 +5,16 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import * as api from "./api";
-import type { GitInfo, ProjectDetail, ProjectDocument, ProjectSummary } from "./types";
+import type {
+  GitInfo,
+  ProjectDetail,
+  ProjectDocument,
+  ProjectSummary,
+  TodoDocument,
+  ValidationWarning,
+  WorkHistoryDocument,
+  WorkHistoryEntry,
+} from "./types";
 
 type Tab = "overview" | "readme" | "todo" | "history" | "git";
 
@@ -329,8 +338,21 @@ function ProjectView({ detail, tab, refreshing, pulling, onTab, onRefresh, onPul
       <section className="tab-content">
         {tab === "overview" && <Overview detail={detail} />}
         {tab === "readme" && <DocumentPanel document={detail.documents.readme} />}
-        {tab === "todo" && <DocumentPanel document={detail.documents.todo} />}
-        {tab === "history" && <DocumentPanel document={detail.documents.workingHistory} />}
+        {tab === "todo" && (
+          <TodoPanel document={detail.state.todos} source={detail.documents.todo} />
+        )}
+        {tab === "history" && (
+          <HistoryPanel
+            document={detail.state.workingHistory}
+            source={detail.documents.workingHistory}
+            onTodo={(todoId) => {
+              onTab("todo");
+              requestAnimationFrame(() => {
+                document.getElementById(`todo-${todoId}`)?.scrollIntoView({ block: "center" });
+              });
+            }}
+          />
+        )}
         {tab === "git" && <GitPanel git={detail.project.git} />}
       </section>
     </div>
@@ -487,6 +509,311 @@ function syncStatusLabel(git: GitInfo): string {
   }
 }
 
+export function TodoPanel({
+  document,
+  source,
+}: {
+  document: TodoDocument;
+  source: ProjectDocument;
+}) {
+  if (source.status === "missing") {
+    return (
+      <StatusMessage
+        title="TODO.md was not found"
+        body="Projector's add_todo operation can create the first structured TODO."
+      />
+    );
+  }
+  if (source.status === "error") {
+    return (
+      <StatusMessage
+        title="TODO.md could not be read"
+        body={source.error ?? "The file is inaccessible."}
+        tone="error"
+      />
+    );
+  }
+
+  const warningIds = new Set(
+    document.warnings
+      .filter((warning) =>
+        ["missing_dependency", "circular_dependency"].includes(warning.code),
+      )
+      .map((warning) => warning.itemId)
+      .filter(Boolean),
+  );
+
+  return (
+    <div className="structured-panel">
+      <StructuredHeader
+        path={document.relativePath}
+        count={document.items.length}
+        noun="TODO"
+      />
+      <ValidationWarnings warnings={document.warnings} />
+      {document.items.length ? (
+        <>
+          <section className="dependency-map panel" aria-label="TODO dependency relationships">
+            <p className="section-label">Dependencies</p>
+            <div className="dependency-rows">
+              {document.items.map((item) => (
+                <div
+                  className={`dependency-row${warningIds.has(item.id) ? " invalid" : ""}`}
+                  key={item.id}
+                >
+                  <code>{item.id}</code>
+                  <span aria-hidden="true">→</span>
+                  <span>
+                    {item.dependencies.length
+                      ? item.dependencies.join(", ")
+                      : "ready (no dependencies)"}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </section>
+          <div className="todo-list">
+            {document.items.map((item) => (
+              <article
+                className={`todo-card priority-${item.priority}${item.status === "blocked" ? " blocked" : ""}`}
+                id={`todo-${item.id}`}
+                key={item.id}
+              >
+                <div className="todo-card-heading">
+                  <div>
+                    <code>{item.id}</code>
+                    <h3>{item.title}</h3>
+                  </div>
+                  <div className="tag-row">
+                    <span className={`tag priority ${item.priority}`}>{item.priority}</span>
+                    <span className={`tag status ${item.status}`}>{item.status}</span>
+                    <span className="tag">{item.area}</span>
+                  </div>
+                </div>
+                <dl className="todo-details">
+                  <div>
+                    <dt>Depends on</dt>
+                    <dd>{item.dependencies.length ? item.dependencies.join(", ") : "none"}</dd>
+                  </div>
+                  <div>
+                    <dt>Rationale</dt>
+                    <dd>{item.rationale}</dd>
+                  </div>
+                </dl>
+                <div className="criteria">
+                  <p className="section-label">Acceptance criteria</p>
+                  <MarkdownContent content={item.acceptanceCriteria} />
+                </div>
+              </article>
+            ))}
+          </div>
+        </>
+      ) : (
+        <StatusMessage title="No open TODOs" body="This project has no structured unfinished work." />
+      )}
+      <PreservedContent content={document.preservedContent} />
+    </div>
+  );
+}
+
+export function HistoryPanel({
+  document,
+  source,
+  onTodo,
+}: {
+  document: WorkHistoryDocument;
+  source: ProjectDocument;
+  onTodo: (todoId: string) => void;
+}) {
+  const [category, setCategory] = useState("all");
+  const [area, setArea] = useState("all");
+  const [relatedTodo, setRelatedTodo] = useState("");
+  const [groupBy, setGroupBy] = useState<"category" | "area">("category");
+
+  if (source.status === "missing") {
+    return (
+      <StatusMessage
+        title="WORK_HISTORY.md was not found"
+        body="Projector's add_work_history operation can create the first structured entry."
+      />
+    );
+  }
+  if (source.status === "error") {
+    return (
+      <StatusMessage
+        title="WORK_HISTORY.md could not be read"
+        body={source.error ?? "The file is inaccessible."}
+        tone="error"
+      />
+    );
+  }
+
+  const normalizedTodo = relatedTodo.trim().toUpperCase();
+  const filtered = document.entries.filter(
+    (entry) =>
+      (category === "all" || entry.category === category) &&
+      (area === "all" || entry.area === area) &&
+      (!normalizedTodo || entry.relatedTodos.includes(normalizedTodo)),
+  );
+  const grouped = filtered.reduce<Map<string, WorkHistoryEntry[]>>((groups, entry) => {
+    const key = groupBy === "category" ? entry.category : entry.area;
+    groups.set(key, [...(groups.get(key) ?? []), entry]);
+    return groups;
+  }, new Map());
+
+  return (
+    <div className="structured-panel">
+      <StructuredHeader
+        path={document.relativePath}
+        count={document.entries.length}
+        noun="history entry"
+      />
+      <ValidationWarnings warnings={document.warnings} />
+      <div className="history-controls panel" aria-label="Working history filters">
+        <label>
+          Category
+          <select value={category} onChange={(event) => setCategory(event.target.value)}>
+            <option value="all">All categories</option>
+            {document.categories.map((value) => (
+              <option key={value} value={value}>{value}</option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Area
+          <select value={area} onChange={(event) => setArea(event.target.value)}>
+            <option value="all">All areas</option>
+            {document.areas.map((value) => (
+              <option key={value} value={value}>{value}</option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Related TODO
+          <input
+            value={relatedTodo}
+            onChange={(event) => setRelatedTodo(event.target.value)}
+            placeholder="TODO-001"
+          />
+        </label>
+        <label>
+          Group by
+          <select
+            value={groupBy}
+            onChange={(event) => setGroupBy(event.target.value as "category" | "area")}
+          >
+            <option value="category">Category</option>
+            <option value="area">Area</option>
+          </select>
+        </label>
+      </div>
+      {grouped.size ? (
+        [...grouped.entries()].map(([group, entries]) => (
+          <section className="history-group" key={group}>
+            <h3>{group}</h3>
+            <div className="history-list">
+              {entries.map((entry) => (
+                <article
+                  className="history-card"
+                  key={`${entry.occurredAt}-${entry.title}`}
+                >
+                  <div className="history-heading">
+                    <div>
+                      <time>{formatLocalDateTime(entry.occurredAt)}</time>
+                      <h4>{entry.title}</h4>
+                    </div>
+                    <div className="tag-row">
+                      <span className="tag category">{entry.category}</span>
+                      <span className="tag">{entry.area}</span>
+                    </div>
+                  </div>
+                  {entry.relatedTodos.length > 0 && (
+                    <div className="related-todos">
+                      Related:
+                      {entry.relatedTodos.map((todoId) => (
+                        <button key={todoId} onClick={() => onTodo(todoId)}>
+                          {todoId}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  <section>
+                    <p className="section-label">Summary</p>
+                    <MarkdownContent content={entry.summary} />
+                  </section>
+                  <section>
+                    <p className="section-label">Limitations</p>
+                    <MarkdownContent content={entry.limitations} />
+                  </section>
+                </article>
+              ))}
+            </div>
+          </section>
+        ))
+      ) : (
+        <StatusMessage title="No matching history" body="Adjust the filters to show entries." />
+      )}
+      <PreservedContent content={document.preservedContent} />
+    </div>
+  );
+}
+
+function StructuredHeader({
+  path,
+  count,
+  noun,
+}: {
+  path: string | null;
+  count: number;
+  noun: string;
+}) {
+  return (
+    <div className="structured-header">
+      <code>{path ?? "Project document"}</code>
+      <span>{count} {count === 1 ? noun : `${noun}s`}</span>
+    </div>
+  );
+}
+
+function ValidationWarnings({ warnings }: { warnings: ValidationWarning[] }) {
+  if (!warnings.length) return null;
+  return (
+    <section className="validation-warnings" role="alert">
+      <strong>{warnings.length} validation {warnings.length === 1 ? "warning" : "warnings"}</strong>
+      <ul>
+        {warnings.map((warning, index) => (
+          <li key={`${warning.code}-${warning.itemId ?? "document"}-${index}`}>
+            {warning.itemId && <code>{warning.itemId}</code>} {warning.message}
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+function PreservedContent({ content }: { content: string | null }) {
+  if (!content) return null;
+  return (
+    <details className="preserved-content">
+      <summary>Preserved unrecognized source content</summary>
+      <MarkdownContent content={content} />
+    </details>
+  );
+}
+
+function MarkdownContent({ content }: { content: string }) {
+  return (
+    <div className="markdown-body compact">
+      <Markdown
+        remarkPlugins={[remarkGfm]}
+        rehypePlugins={[rehypeRaw, [rehypeSanitize, markdownSanitizeSchema]]}
+      >
+        {content}
+      </Markdown>
+    </div>
+  );
+}
+
 function getPullUnavailableReason(git: GitInfo): string | null {
   if (!git.isRepository) return "Pull is available only for Git repositories";
   if (git.fetchStatus === "fetching") return "Wait for the current Git fetch to finish";
@@ -509,6 +836,20 @@ function formatDate(value: string | null): string {
   const date = new Date(value);
   if (Number.isNaN(date.valueOf())) return "Not available";
   return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date);
+}
+
+function formatLocalDateTime(value: string): string {
+  const normalized = value.includes("T") ? value : value.replace(" ", "T");
+  const parsed = new Date(normalized);
+  return Number.isNaN(parsed.getTime())
+    ? value
+    : parsed.toLocaleString([], {
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
 }
 
 function formatRelative(value: string | null): string {

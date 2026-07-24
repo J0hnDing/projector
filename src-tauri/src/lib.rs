@@ -1,22 +1,33 @@
+mod agent_api;
 mod git_sync;
+pub mod migration;
 mod models;
 mod observer;
+pub mod project_state;
 mod registry;
 mod watcher;
 
-use std::{path::PathBuf, sync::Mutex};
+use std::{
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
 
 use git_sync::GitSyncManager;
-use models::{ProjectDetail, ProjectSummary};
+use models::{
+    AddTodoInput, AddWorkHistoryInput, CompleteTodoInput, CompleteTodoResult, ProjectDetail,
+    ProjectSummary, TodoItem, WorkHistoryEntry,
+};
+use project_state::ProjectStateService;
 use registry::RegistryStore;
 use tauri::{AppHandle, Manager, State};
 use uuid::Uuid;
 use watcher::ProjectWatcher;
 
 struct AppState {
-    registry: Mutex<RegistryStore>,
+    registry: Arc<Mutex<RegistryStore>>,
     watcher: Mutex<ProjectWatcher>,
     git_sync: GitSyncManager,
+    project_state: Arc<ProjectStateService>,
 }
 
 #[tauri::command]
@@ -172,6 +183,58 @@ async fn pull_project(id: Uuid, state: State<'_, AppState>) -> Result<ProjectDet
     .map_err(|error| format!("Unable to pull project: {error}"))?
 }
 
+#[tauri::command]
+async fn add_todo(
+    id: Uuid,
+    input: AddTodoInput,
+    state: State<'_, AppState>,
+) -> Result<TodoItem, String> {
+    let root = registered_root(id, &state)?;
+    let service = Arc::clone(&state.project_state);
+    tauri::async_runtime::spawn_blocking(move || service.add_todo(&root, input))
+        .await
+        .map_err(|error| format!("Unable to add TODO: {error}"))?
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn complete_todo(
+    id: Uuid,
+    input: CompleteTodoInput,
+    state: State<'_, AppState>,
+) -> Result<CompleteTodoResult, String> {
+    let root = registered_root(id, &state)?;
+    let service = Arc::clone(&state.project_state);
+    tauri::async_runtime::spawn_blocking(move || service.complete_todo(&root, input))
+        .await
+        .map_err(|error| format!("Unable to complete TODO: {error}"))?
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn add_work_history(
+    id: Uuid,
+    input: AddWorkHistoryInput,
+    state: State<'_, AppState>,
+) -> Result<WorkHistoryEntry, String> {
+    let root = registered_root(id, &state)?;
+    let service = Arc::clone(&state.project_state);
+    tauri::async_runtime::spawn_blocking(move || service.add_work_history(&root, input))
+        .await
+        .map_err(|error| format!("Unable to add working history: {error}"))?
+        .map_err(|error| error.to_string())
+}
+
+fn registered_root(id: Uuid, state: &State<'_, AppState>) -> Result<PathBuf, String> {
+    state
+        .registry
+        .lock()
+        .map_err(|_| "The project registry is unavailable".to_string())?
+        .find(id)
+        .map(|entry| entry.path.clone())
+        .ok_or_else(|| format!("Unknown project id {id}"))
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -188,10 +251,18 @@ pub fn run() {
             }
             let startup_entries = registry.entries().to_vec();
             let git_sync = GitSyncManager::load(sync_cache_path);
+            let registry = Arc::new(Mutex::new(registry));
+            let project_state = Arc::new(ProjectStateService::default());
+            agent_api::start(agent_api::AgentApiContext {
+                registry: Arc::clone(&registry),
+                project_state: Arc::clone(&project_state),
+            })
+            .map_err(Box::<dyn std::error::Error>::from)?;
             app.manage(AppState {
-                registry: Mutex::new(registry),
+                registry,
                 watcher: Mutex::new(watcher),
                 git_sync: git_sync.clone(),
+                project_state,
             });
             for entry in startup_entries {
                 git_sync.fetch(app.handle().clone(), entry);
@@ -205,7 +276,10 @@ pub fn run() {
             open_project,
             refresh_project,
             refresh_projects,
-            pull_project
+            pull_project,
+            add_todo,
+            complete_todo,
+            add_work_history
         ])
         .run(tauri::generate_context!())
         .expect("error while running Projector");

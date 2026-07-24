@@ -4,7 +4,7 @@ This file applies to the entire repository.
 
 ## Product contract
 
-Projector is a lightweight, local Tauri desktop application for managing and observing registered software projects. Keep the interface focused on rapid project switching, documentation, structured TODOs, working history, and Git awareness.
+Projector is a lightweight, local Tauri desktop application for observing registered software projects. Keep the interface focused on rapid project switching, documentation, tasks, working history, and Git awareness.
 
 Preserve these boundaries:
 
@@ -14,8 +14,7 @@ Preserve these boundaries:
 - Canonicalize paths and reject document or Git metadata that resolves outside a registered root.
 - Removing a project must only remove Projector metadata; never delete or edit the project directory.
 - Do not introduce a separate current-state document or status field. Infer status from documents and Git.
-- Do not add cloud synchronization, analytics, Kanban features, generic document editing, project execution, or team features unless a later milestone explicitly requests them.
-- Projector is authoritative for structured TODO and working-history mutations. Agents use the narrow loopback API; they must not directly edit `TODO.md` or `WORK_HISTORY.md`.
+- Do not add cloud synchronization, analytics, Kanban features, document editing, agent integrations, or team features unless a later milestone explicitly requests them.
 
 Project execution is out of scope for the current MVP, but it is a valid future product direction. Do not add start, stop, restart, build, test, or other runtime controls as an incidental change. A future milestone may add them through a separate, explicitly permissioned service with clear user authorization, lifecycle ownership, failure handling, and tests.
 
@@ -41,9 +40,6 @@ Keep fetch non-blocking, deduplicated per project, limited to 30 seconds, and fa
 - `src-tauri/src/lib.rs` owns command orchestration and application state.
 - `src-tauri/src/registry.rs` owns registry validation and persistence.
 - `src-tauri/src/observer.rs` owns bounded document and libgit2 observation.
-- `src-tauri/src/project_state.rs` owns the shared TODO/history parser, validator, deterministic writer, and mutation service.
-- `src-tauri/src/agent_api.rs` exposes that service through the loopback-only agent API.
-- `src-tauri/src/migration.rs` owns the bounded direct-child project migration and `AGENTS.md` updates.
 - `src-tauri/src/git_sync.rs` owns the narrow background fetch, manual fast-forward pull, and fetch cache workflows.
 - `src-tauri/src/watcher.rs` owns registered-root filesystem notifications.
 - `src-tauri/capabilities/default.json` must remain minimal.
@@ -62,8 +58,6 @@ Recognize filenames case-insensitively with project-root precedence over `docs/`
 - `WORKING_HISTORY.md`
 
 Preserve the 2 MB display limit and clear missing, truncated, inaccessible, and invalid-path states. Markdown may render embedded HTML only through the existing raw-parse-then-sanitize pipeline. Do not allow scripts, event handlers, unsafe URLs, or unsanitized HTML.
-
-TODO and working-history mutations must go through `ProjectStateService`, use atomic replacement, and remain serialized by its write lock. Preserve malformed source content and surface validation warnings rather than silently dropping it.
 
 ## Development commands
 
@@ -95,7 +89,6 @@ Release builds must retain the Windows GUI subsystem setting in `src-tauri/src/m
 ## Testing expectations
 
 - Add or update Rust tests for registry, path-boundary, document, Git, watcher, fetch, and pull behavior.
-- Add or update Rust tests for structured parsing/writing, dependency validation, API mutations, rollback, concurrency, and migration behavior.
 - Use temporary directories and local test repositories. Tests must not depend on live remotes, credentials, or internet access.
 - Add or update React Testing Library tests for user-visible states and interactions.
 - Cover graceful failures as well as successful paths.
@@ -112,14 +105,3 @@ Do not edit generated output under `node_modules/`, `dist/`, or `src-tauri/targe
 - Keep runtime management and broader Git workflows beyond fetch and fast-forward-only pull documented as future, permissioned work until a milestone authorizes their implementation.
 
 Preserve unrelated user changes in the working tree and keep each change tightly scoped to the request.
-
-## Projector
-
-Use Projector's local API at `http://127.0.0.1:48721/v1` to manage project state. Projector must be running; resolve the registered project ID with `GET /projects`.
-
-- `POST /add_todo` (`add_todo`): `projectId`, `title`, `priority` (`critical|high|medium|low`), `area`, `dependencies` (TODO ID array), `rationale`, `acceptanceCriteria`, and optional `status` (`planned|blocked`, default `planned`).
-- `POST /complete_todo` (`complete_todo`): `projectId`, `todoId`, `historyTitle`, `category` (`feature|bugfix|refactor|test|documentation|research|decision`), `area`, `summary`, and `limitations`.
-- `POST /add_work_history` (`add_work_history`): `projectId`, `title`, `category`, `relatedTodos` (TODO ID array), `area`, `summary`, and `limitations`.
-
-Send JSON with camel-case field names. Use empty arrays when there are no dependencies or related TODOs, and use `none` for no known limitations.
-- Do not directly modify `TODO.md` or `WORK_HISTORY.md`.
