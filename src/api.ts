@@ -12,6 +12,10 @@ export function registerProject(path: string): Promise<ProjectSummary> {
   return invoke("register_project", { path });
 }
 
+export function createProject(parentPath: string, name: string): Promise<ProjectSummary> {
+  return invoke("create_project", { parentPath, name });
+}
+
 export function removeProject(id: string): Promise<void> {
   return invoke("remove_project", { id });
 }
@@ -37,6 +41,15 @@ export async function chooseProjectDirectory(): Promise<string | null> {
     directory: true,
     multiple: false,
     title: "Register a project directory",
+  });
+  return typeof selected === "string" ? selected : null;
+}
+
+export async function chooseProjectParentDirectory(): Promise<string | null> {
+  const selected = await open({
+    directory: true,
+    multiple: false,
+    title: "Choose where to create the project",
   });
   return typeof selected === "string" ? selected : null;
 }

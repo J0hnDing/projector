@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -9,12 +9,14 @@ import type { ProjectDetail } from "./types";
 vi.mock("./api", () => ({
   listProjects: vi.fn(),
   registerProject: vi.fn(),
+  createProject: vi.fn(),
   removeProject: vi.fn(),
   openProject: vi.fn(),
   refreshProject: vi.fn(),
   refreshProjects: vi.fn(),
   pullProject: vi.fn(),
   chooseProjectDirectory: vi.fn(),
+  chooseProjectParentDirectory: vi.fn(),
   onProjectChanged: vi.fn().mockResolvedValue(() => undefined),
   onGitSyncChanged: vi.fn().mockResolvedValue(() => undefined),
 }));
@@ -73,6 +75,7 @@ describe("App", () => {
     vi.mocked(api.refreshProject).mockReset();
     vi.mocked(api.refreshProjects).mockReset();
     vi.mocked(api.pullProject).mockReset();
+    vi.mocked(api.createProject).mockReset();
     vi.mocked(api.listProjects).mockResolvedValue([]);
     vi.mocked(api.refreshProjects).mockResolvedValue([]);
   });
@@ -80,7 +83,7 @@ describe("App", () => {
   it("shows a clear first-run state", async () => {
     render(<App />);
     expect(await screen.findByText("Your projects, at a glance")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Register your first project" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Create your first project" })).toBeInTheDocument();
   });
 
   it("opens a registered project and exposes its information tabs", async () => {
@@ -103,8 +106,27 @@ describe("App", () => {
       .mockResolvedValueOnce([detail.project]);
     render(<App />);
 
-    await userEvent.click(await screen.findByRole("button", { name: "Register your first project" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Register an existing folder" }));
     await waitFor(() => expect(api.registerProject).toHaveBeenCalledWith("C:\\code\\example"));
+    expect(await screen.findByRole("heading", { name: "Example" })).toBeInTheDocument();
+  });
+
+  it("creates and opens a Projector-ready project", async () => {
+    vi.mocked(api.chooseProjectParentDirectory).mockResolvedValue("C:\\code");
+    vi.mocked(api.createProject).mockResolvedValue(detail.project);
+    vi.mocked(api.openProject).mockResolvedValue(detail);
+    vi.mocked(api.listProjects)
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([detail.project]);
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Create your first project" }));
+    await userEvent.type(screen.getByLabelText("Project name"), "Example");
+    await userEvent.click(screen.getByRole("button", { name: "Choose…" }));
+    await waitFor(() => expect(screen.getByLabelText("Parent folder")).toHaveValue("C:\\code"));
+    await userEvent.click(screen.getByRole("button", { name: "Confirm project creation" }));
+
+    await waitFor(() => expect(api.createProject).toHaveBeenCalledWith("C:\\code", "Example"));
     expect(await screen.findByRole("heading", { name: "Example" })).toBeInTheDocument();
   });
 
@@ -179,7 +201,7 @@ describe("DocumentPanel", () => {
 });
 
 describe("structured project state", () => {
-  it("shows ranked TODO fields, dependencies, and validation warnings", () => {
+  it("shows four compact priority boxes and opens TODO details in a closable window", async () => {
     render(
       <TodoPanel
         source={{ ...detail.documents.todo, status: "available", relativePath: "TODO.md" }}
@@ -189,8 +211,8 @@ describe("structured project state", () => {
             {
               id: "TODO-001",
               title: "Ship state management",
-              status: "blocked",
               priority: "critical",
+              category: "feature",
               area: "project-state",
               dependencies: ["TODO-999"],
               rationale: "Agents need one safe contract.",
@@ -209,19 +231,80 @@ describe("structured project state", () => {
       />,
     );
 
-    expect(screen.getByRole("heading", { name: "Ship state management" })).toBeInTheDocument();
-    expect(screen.getByText("critical")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open Ship state management" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "critical" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "high" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "medium" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "low" })).toBeInTheDocument();
     expect(screen.getByText("blocked")).toBeInTheDocument();
+    expect(screen.queryByText("Agents need one safe contract.")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("TODO dependency relationships")).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Open Ship state management" }));
+    const dialog = screen.getByRole("dialog", { name: "Ship state management" });
+    expect(dialog).toBeInTheDocument();
+    expect(within(dialog).getByLabelText("TODO dependencies")).toHaveTextContent("TODO-999");
+    expect(screen.getByText("Agents need one safe contract.")).toBeInTheDocument();
+    expect(screen.getByText("The parser and writer agree.")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Close details" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(screen.getByRole("alert")).toHaveTextContent("TODO-999");
     expect(screen.getByText("Preserved unrecognized source content")).toBeInTheDocument();
   });
 
-  it("filters and groups working history while linking related TODOs", async () => {
-    const onTodo = vi.fn();
+  it("filters TODOs by category while preserving the priority columns", async () => {
+    render(
+      <TodoPanel
+        source={{ ...detail.documents.todo, status: "available", relativePath: "TODO.md" }}
+        document={{
+          relativePath: "TODO.md",
+          items: [
+            {
+              id: "TODO-001",
+              title: "Build the feature",
+              priority: "high",
+              category: "feature",
+              area: "ui",
+              dependencies: [],
+              rationale: "Needed.",
+              acceptanceCriteria: "It works.",
+            },
+            {
+              id: "TODO-002",
+              title: "Research the workflow",
+              priority: "low",
+              category: "research",
+              area: "product",
+              dependencies: [],
+              rationale: "Clarify the design.",
+              acceptanceCriteria: "The decision is documented.",
+            },
+          ],
+          warnings: [],
+          preservedContent: null,
+        }}
+      />,
+    );
+
+    const category = screen.getByLabelText("Category");
+    expect(category).toHaveValue("all");
+    expect(screen.getByRole("button", { name: "Open Build the feature" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open Research the workflow" })).toBeInTheDocument();
+
+    await userEvent.selectOptions(category, "research");
+    expect(screen.queryByRole("button", { name: "Open Build the feature" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open Research the workflow" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "critical" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "low" })).toBeInTheDocument();
+
+    await userEvent.selectOptions(category, "all");
+    expect(screen.getByRole("button", { name: "Open Build the feature" })).toBeInTheDocument();
+  });
+
+  it("shows history metadata newest first and opens details in a closable window", async () => {
     render(
       <HistoryPanel
         source={{ ...detail.documents.workingHistory, status: "available", relativePath: "WORK_HISTORY.md" }}
-        onTodo={onTodo}
         document={{
           relativePath: "WORK_HISTORY.md",
           categories: ["feature", "bugfix"],
@@ -233,7 +316,6 @@ describe("structured project state", () => {
               occurredAt: "2026-07-23T16:30:00",
               title: "State API implemented",
               category: "feature",
-              relatedTodos: ["TODO-001"],
               area: "project-state",
               summary: "Added the API.",
               limitations: "none",
@@ -242,7 +324,6 @@ describe("structured project state", () => {
               occurredAt: "2026-07-23T17:00:00",
               title: "UI fixed",
               category: "bugfix",
-              relatedTodos: [],
               area: "ui",
               summary: "Fixed the UI.",
               limitations: "none",
@@ -252,10 +333,26 @@ describe("structured project state", () => {
       />,
     );
 
+    const historyEntries = screen.getAllByRole("button", { name: /^Open / });
+    expect(historyEntries.map((button) => button.getAttribute("aria-label"))).toEqual([
+      "Open UI fixed",
+      "Open State API implemented",
+    ]);
+    const visibleMetadata = Array.from(document.querySelectorAll(".history-row-metadata"));
+    expect(visibleMetadata[0]).toHaveTextContent("2026");
+    expect(visibleMetadata[0]).toHaveTextContent("bugfix");
+    expect(visibleMetadata[0]).toHaveTextContent("ui");
+    expect(visibleMetadata[1]).toHaveTextContent("feature");
+    expect(visibleMetadata[1]).toHaveTextContent("project-state");
+    expect(screen.queryByText("Added the API.")).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Open State API implemented" }));
+    expect(screen.getByRole("dialog", { name: "State API implemented" })).toBeInTheDocument();
+    expect(screen.getByText("Added the API.")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Close details" }));
+
     await userEvent.selectOptions(screen.getByLabelText("Category"), "feature");
-    expect(screen.getByRole("heading", { name: "State API implemented" })).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "UI fixed" })).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "TODO-001" }));
-    expect(onTodo).toHaveBeenCalledWith("TODO-001");
+    expect(screen.getByRole("button", { name: "Open State API implemented" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Open UI fixed" })).not.toBeInTheDocument();
   });
 });

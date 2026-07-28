@@ -55,7 +55,6 @@ export interface ProjectDetail {
   state: ProjectState;
 }
 
-export type TodoStatus = "planned" | "blocked";
 export type TodoPriority = "critical" | "high" | "medium" | "low";
 export type WorkCategory =
   | "feature"
@@ -64,7 +63,7 @@ export type WorkCategory =
   | "test"
   | "documentation"
   | "research"
-  | "decision";
+  | "others";
 
 export interface ValidationWarning {
   code: string;
@@ -75,8 +74,8 @@ export interface ValidationWarning {
 export interface TodoItem {
   id: string;
   title: string;
-  status: TodoStatus;
   priority: TodoPriority;
+  category: WorkCategory;
   area: string;
   dependencies: string[];
   rationale: string;
@@ -94,7 +93,6 @@ export interface WorkHistoryEntry {
   occurredAt: string;
   title: string;
   category: WorkCategory;
-  relatedTodos: string[];
   area: string;
   summary: string;
   limitations: string;

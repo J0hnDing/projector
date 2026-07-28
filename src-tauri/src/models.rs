@@ -70,19 +70,12 @@ pub struct TodoDocument {
 pub struct TodoItem {
     pub id: String,
     pub title: String,
-    pub status: TodoStatus,
     pub priority: TodoPriority,
+    pub category: WorkCategory,
     pub area: String,
     pub dependencies: Vec<String>,
     pub rationale: String,
     pub acceptance_criteria: String,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum TodoStatus {
-    Planned,
-    Blocked,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -122,7 +115,6 @@ pub struct WorkHistoryEntry {
     pub occurred_at: NaiveDateTime,
     pub title: String,
     pub category: WorkCategory,
-    pub related_todos: Vec<String>,
     pub area: String,
     pub summary: String,
     pub limitations: String,
@@ -137,7 +129,7 @@ pub enum WorkCategory {
     Test,
     Documentation,
     Research,
-    Decision,
+    Others,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -149,41 +141,30 @@ pub struct ValidationWarning {
 }
 
 #[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct AddTodoInput {
     pub title: String,
     pub priority: TodoPriority,
+    pub category: WorkCategory,
     pub area: String,
     #[serde(default)]
     pub dependencies: Vec<String>,
     pub rationale: String,
     pub acceptance_criteria: String,
-    #[serde(default = "default_todo_status")]
-    pub status: TodoStatus,
-}
-
-fn default_todo_status() -> TodoStatus {
-    TodoStatus::Planned
 }
 
 #[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct CompleteTodoInput {
-    pub todo_id: String,
-    pub history_title: String,
-    pub category: WorkCategory,
-    pub area: String,
     pub summary: String,
     pub limitations: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct AddWorkHistoryInput {
     pub title: String,
     pub category: WorkCategory,
-    #[serde(default)]
-    pub related_todos: Vec<String>,
     pub area: String,
     pub summary: String,
     pub limitations: String,

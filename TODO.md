@@ -2,6 +2,7 @@
 
 - Status: planned
 - Priority: low
+- Category: research
 - Area: unknown
 - Dependencies: none
 - Rationale: unknown
@@ -13,6 +14,7 @@ unknown
 
 - Status: planned
 - Priority: low
+- Category: feature
 - Area: unknown
 - Dependencies: none
 - Rationale: unknown
@@ -24,6 +26,7 @@ unknown
 
 - Status: planned
 - Priority: low
+- Category: feature
 - Area: unknown
 - Dependencies: none
 - Rationale: unknown
@@ -35,6 +38,7 @@ unknown
 
 - Status: planned
 - Priority: low
+- Category: research
 - Area: unknown
 - Dependencies: none
 - Rationale: unknown
@@ -46,6 +50,7 @@ unknown
 
 - Status: planned
 - Priority: low
+- Category: feature
 - Area: unknown
 - Dependencies: none
 - Rationale: unknown

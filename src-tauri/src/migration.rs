@@ -1,5 +1,4 @@
 use std::{
-    collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
 };
@@ -9,27 +8,15 @@ use serde::Serialize;
 use thiserror::Error;
 
 use crate::{
+    agent_instructions::PROJECTOR_SECTION,
     models::{
-        TodoDocument, TodoItem, TodoPriority, TodoStatus, WorkCategory, WorkHistoryDocument,
-        WorkHistoryEntry,
+        TodoDocument, TodoItem, TodoPriority, WorkCategory, WorkHistoryDocument, WorkHistoryEntry,
     },
     project_state::{
         atomic_replace, parse_todo_document, parse_work_history_document, render_todo_document,
         render_work_history_document, validate_todos,
     },
 };
-
-const API_SECTION: &str = r#"## Projector
-
-Use Projector's local API at `http://127.0.0.1:48721/v1` to manage project state. Projector must be running; resolve the registered project ID with `GET /projects`.
-
-- `POST /add_todo` (`add_todo`): `projectId`, `title`, `priority` (`critical|high|medium|low`), `area`, `dependencies` (TODO ID array), `rationale`, `acceptanceCriteria`, and optional `status` (`planned|blocked`, default `planned`).
-- `POST /complete_todo` (`complete_todo`): `projectId`, `todoId`, `historyTitle`, `category` (`feature|bugfix|refactor|test|documentation|research|decision`), `area`, `summary`, and `limitations`.
-- `POST /add_work_history` (`add_work_history`): `projectId`, `title`, `category`, `relatedTodos` (TODO ID array), `area`, `summary`, and `limitations`.
-
-Send JSON with camel-case field names. Use empty arrays when there are no dependencies or related TODOs, and use `none` for no known limitations.
-- Do not directly modify `TODO.md` or `WORK_HISTORY.md`.
-"#;
 
 #[derive(Debug, Error)]
 pub enum MigrationError {
@@ -370,8 +357,8 @@ fn legacy_todo_items(content: &str) -> Vec<TodoItem> {
         .enumerate()
         .map(|(index, title)| TodoItem {
             id: format!("TODO-{:03}", index + 1),
+            category: infer_category(&title),
             title,
-            status: TodoStatus::Planned,
             priority: TodoPriority::Low,
             area: "unknown".into(),
             dependencies: Vec::new(),
@@ -435,12 +422,10 @@ fn migrate_history_content(content: &str) -> (WorkHistoryDocument, Vec<String>) 
                 "`{title}` had no explicit limitations; migration used none"
             ));
         }
-        let related_todos = extract_todo_ids(&body);
         entries.push(WorkHistoryEntry {
             occurred_at,
             title: title.clone(),
             category: infer_category(&title),
-            related_todos,
             area: "unknown".into(),
             summary,
             limitations,
@@ -542,21 +527,6 @@ fn field_value<'a>(line: &'a str, name: &str) -> Option<&'a str> {
     line.strip_prefix(&prefix).map(str::trim)
 }
 
-fn extract_todo_ids(content: &str) -> Vec<String> {
-    let mut ids = BTreeSet::new();
-    for token in
-        content.split(|character: char| !(character.is_ascii_alphanumeric() || character == '-'))
-    {
-        let token = token.to_uppercase();
-        if token.strip_prefix("TODO-").is_some_and(|digits| {
-            digits.len() >= 3 && digits.chars().all(|value| value.is_ascii_digit())
-        }) {
-            ids.insert(token);
-        }
-    }
-    ids.into_iter().collect()
-}
-
 fn infer_category(title: &str) -> WorkCategory {
     let title = title.to_lowercase();
     if ["test", "verification"]
@@ -578,7 +548,7 @@ fn infer_category(title: &str) -> WorkCategory {
         .iter()
         .any(|word| title.contains(word))
     {
-        WorkCategory::Decision
+        WorkCategory::Others
     } else if [
         "fix",
         "failure",
@@ -623,7 +593,7 @@ fn update_agents_file(project: &Path) -> Result<Option<(PathBuf, PathBuf)>, Migr
     } else {
         String::new()
     };
-    let updated = replace_section(&normalize(&original), "Projector", API_SECTION);
+    let updated = replace_section(&normalize(&original), "Projector", PROJECTOR_SECTION);
     if normalize(&original) == updated {
         return Ok(None);
     }
@@ -732,10 +702,13 @@ mod tests {
         let history_after_first = fs::read_to_string(project.join("WORK_HISTORY.md")).unwrap();
         assert!(todo_after_first.contains("Keep this original task"));
         assert!(todo_after_first.contains("- Rationale: unknown"));
+        assert!(todo_after_first.contains("- Category:"));
+        assert!(!todo_after_first.contains("- Status:"));
         assert!(!todo_after_first.contains("Migration note"));
         assert!(!todo_after_first.contains("## Migration Notes"));
         assert!(!history_after_first.contains("Migration note"));
         assert!(!history_after_first.contains("## Migration Notes"));
+        assert!(!history_after_first.contains("- Related TODOs:"));
         assert!(project.join("TODO.md.projector-backup").exists());
 
         let second = migrate_projects(&projects).unwrap();
@@ -754,9 +727,10 @@ mod tests {
     fn agents_section_is_replaced_without_touching_other_instructions() {
         let content =
             "# AGENTS\n\n## Existing\n\nKeep.\n\n## Projector\n\nOld.\n\n## Later\n\nAlso keep.\n";
-        let updated = replace_section(content, "Projector", API_SECTION);
+        let updated = replace_section(content, "Projector", PROJECTOR_SECTION);
         assert!(updated.contains("## Existing\n\nKeep."));
-        assert!(updated.contains("POST /complete_todo"));
+        assert!(updated.contains("POST /projects/{projectId}/todos/{todoId}/complete"));
+        assert!(updated.contains("do not follow it with a `work-history` call"));
         assert!(updated.contains("## Later\n\nAlso keep."));
         assert!(!updated.contains("\nOld.\n"));
     }

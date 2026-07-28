@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { FormEvent, ReactNode } from "react";
 import rehypeRaw from "rehype-raw";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import Markdown from "react-markdown";
@@ -11,7 +12,9 @@ import type {
   ProjectDocument,
   ProjectSummary,
   TodoDocument,
+  TodoPriority,
   ValidationWarning,
+  WorkCategory,
   WorkHistoryDocument,
   WorkHistoryEntry,
 } from "./types";
@@ -24,6 +27,16 @@ const tabs: Array<{ id: Tab; label: string }> = [
   { id: "todo", label: "TODO" },
   { id: "history", label: "Working history" },
   { id: "git", label: "Git activity" },
+];
+
+const workCategories: WorkCategory[] = [
+  "feature",
+  "bugfix",
+  "refactor",
+  "test",
+  "documentation",
+  "research",
+  "others",
 ];
 
 const markdownSanitizeSchema = {
@@ -42,9 +55,14 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [pulling, setPulling] = useState(false);
+  const [createDialogOpen, setCreateDialogOpen] = useState(false);
+  const [creatingProject, setCreatingProject] = useState(false);
+  const [newProjectName, setNewProjectName] = useState("");
+  const [newProjectParent, setNewProjectParent] = useState("");
   const [error, setError] = useState<string | null>(null);
   const selectedIdRef = useRef<string | null>(null);
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const createNameInput = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     selectedIdRef.current = selectedId;
@@ -183,6 +201,39 @@ export default function App() {
     }
   };
 
+  const beginCreate = () => {
+    setError(null);
+    setNewProjectName("");
+    setNewProjectParent("");
+    setCreateDialogOpen(true);
+  };
+
+  const chooseCreateLocation = async () => {
+    try {
+      const path = await api.chooseProjectParentDirectory();
+      if (path) setNewProjectParent(path);
+    } catch (reason) {
+      setError(messageFrom(reason));
+    }
+  };
+
+  const create = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!newProjectName.trim() || !newProjectParent) return;
+    setError(null);
+    setCreatingProject(true);
+    try {
+      const project = await api.createProject(newProjectParent, newProjectName.trim());
+      setCreateDialogOpen(false);
+      await loadProjects();
+      await openProject(project.id);
+    } catch (reason) {
+      setError(messageFrom(reason));
+    } finally {
+      setCreatingProject(false);
+    }
+  };
+
   const pull = async () => {
     const id = selectedIdRef.current;
     if (!id) return;
@@ -212,9 +263,14 @@ export default function App() {
           </button>
         </header>
 
-        <button className="primary-button register-button" onClick={() => void register()}>
-          <span aria-hidden="true">＋</span> Register project
-        </button>
+        <div className="project-actions">
+          <button className="primary-button register-button" onClick={beginCreate}>
+            <span aria-hidden="true">＋</span> Create project
+          </button>
+          <button className="secondary-button register-button" onClick={() => void register()}>
+            Register folder
+          </button>
+        </div>
 
         <div className="project-count">
           {projects.length} {projects.length === 1 ? "project" : "projects"}
@@ -231,7 +287,7 @@ export default function App() {
         </nav>
         {!loading && projects.length === 0 && (
           <div className="sidebar-empty">
-            Register a local folder to see its documentation and Git activity.
+            Create a project or register an existing local folder to get started.
           </div>
         )}
       </aside>
@@ -259,11 +315,70 @@ export default function App() {
         ) : (
           <CenteredMessage
             title={projects.length ? "Select a project" : "Your projects, at a glance"}
-            body={projects.length ? "Choose a registered project from the list." : "Register a local project directory to get started. Projector only observes files; it never runs your project."}
-            action={!projects.length ? <button className="primary-button" onClick={() => void register()}>Register your first project</button> : undefined}
+            body={projects.length ? "Choose a registered project from the list." : "Create a Projector-ready folder or register an existing project. Projector never runs your project."}
+            action={!projects.length ? (
+              <div className="empty-actions">
+                <button className="primary-button" onClick={beginCreate}>Create your first project</button>
+                <button className="secondary-button" onClick={() => void register()}>Register an existing folder</button>
+              </div>
+            ) : undefined}
           />
         )}
       </main>
+      {createDialogOpen && (
+        <DetailWindow
+          id="create-project"
+          initialFocusRef={createNameInput}
+          onClose={() => {
+            if (!creatingProject) setCreateDialogOpen(false);
+          }}
+          title="Create a project"
+        >
+          <form className="create-project-form" onSubmit={(event) => void create(event)}>
+            <label>
+              Project name
+              <input
+                maxLength={120}
+                onChange={(event) => setNewProjectName(event.target.value)}
+                placeholder="My Project"
+                ref={createNameInput}
+                required
+                value={newProjectName}
+              />
+            </label>
+            <label>
+              Parent folder
+              <div className="path-picker">
+                <input
+                  aria-label="Parent folder"
+                  placeholder="Choose a folder"
+                  readOnly
+                  required
+                  value={newProjectParent}
+                />
+                <button
+                  className="secondary-button"
+                  onClick={() => void chooseCreateLocation()}
+                  type="button"
+                >
+                  Choose…
+                </button>
+              </div>
+            </label>
+            <p className="create-project-note">
+              Projector creates the folder, AGENTS.md, TODO.md, and WORK_HISTORY.md, then registers it.
+            </p>
+            <button
+              aria-label="Confirm project creation"
+              className="primary-button"
+              disabled={creatingProject || !newProjectName.trim() || !newProjectParent}
+              type="submit"
+            >
+              {creatingProject ? "Creating…" : "Create project"}
+            </button>
+          </form>
+        </DetailWindow>
+      )}
     </div>
   );
 }
@@ -345,12 +460,6 @@ function ProjectView({ detail, tab, refreshing, pulling, onTab, onRefresh, onPul
           <HistoryPanel
             document={detail.state.workingHistory}
             source={detail.documents.workingHistory}
-            onTodo={(todoId) => {
-              onTab("todo");
-              requestAnimationFrame(() => {
-                document.getElementById(`todo-${todoId}`)?.scrollIntoView({ block: "center" });
-              });
-            }}
           />
         )}
         {tab === "git" && <GitPanel git={detail.project.git} />}
@@ -516,6 +625,9 @@ export function TodoPanel({
   document: TodoDocument;
   source: ProjectDocument;
 }) {
+  const [selectedTodoId, setSelectedTodoId] = useState<string | null>(null);
+  const [category, setCategory] = useState<WorkCategory | "all">("all");
+
   if (source.status === "missing") {
     return (
       <StatusMessage
@@ -534,14 +646,14 @@ export function TodoPanel({
     );
   }
 
-  const warningIds = new Set(
-    document.warnings
-      .filter((warning) =>
-        ["missing_dependency", "circular_dependency"].includes(warning.code),
-      )
-      .map((warning) => warning.itemId)
-      .filter(Boolean),
+  const priorities: TodoPriority[] = ["critical", "high", "medium", "low"];
+  const categories = workCategories.filter((value) =>
+    document.items.some((item) => item.category === value),
   );
+  const filteredItems = document.items.filter(
+    (item) => category === "all" || item.category === category,
+  );
+  const selectedTodo = document.items.find((item) => item.id === selectedTodoId) ?? null;
 
   return (
     <div className="structured-panel">
@@ -551,67 +663,112 @@ export function TodoPanel({
         noun="TODO"
       />
       <ValidationWarnings warnings={document.warnings} />
-      {document.items.length ? (
-        <>
-          <section className="dependency-map panel" aria-label="TODO dependency relationships">
-            <p className="section-label">Dependencies</p>
-            <div className="dependency-rows">
-              {document.items.map((item) => (
-                <div
-                  className={`dependency-row${warningIds.has(item.id) ? " invalid" : ""}`}
-                  key={item.id}
-                >
-                  <code>{item.id}</code>
-                  <span aria-hidden="true">→</span>
-                  <span>
-                    {item.dependencies.length
-                      ? item.dependencies.join(", ")
-                      : "ready (no dependencies)"}
-                  </span>
-                </div>
+      {document.items.length > 0 && (
+        <div className="history-controls todo-controls panel" aria-label="TODO filters">
+          <label>
+            Category
+            <select
+              value={category}
+              onChange={(event) => {
+                setCategory(event.target.value as WorkCategory | "all");
+                setSelectedTodoId(null);
+              }}
+            >
+              <option value="all">All categories</option>
+              {categories.map((value) => (
+                <option key={value} value={value}>{value}</option>
               ))}
-            </div>
-          </section>
-          <div className="todo-list">
-            {document.items.map((item) => (
-              <article
-                className={`todo-card priority-${item.priority}${item.status === "blocked" ? " blocked" : ""}`}
-                id={`todo-${item.id}`}
-                key={item.id}
-              >
-                <div className="todo-card-heading">
-                  <div>
-                    <code>{item.id}</code>
-                    <h3>{item.title}</h3>
-                  </div>
-                  <div className="tag-row">
-                    <span className={`tag priority ${item.priority}`}>{item.priority}</span>
-                    <span className={`tag status ${item.status}`}>{item.status}</span>
-                    <span className="tag">{item.area}</span>
-                  </div>
+            </select>
+          </label>
+        </div>
+      )}
+      {document.items.length ? (
+        <div className="priority-board" aria-label="TODOs by priority">
+          {priorities.map((priority) => {
+            const items = filteredItems.filter((item) => item.priority === priority);
+            return (
+              <section className={`priority-column priority-${priority}`} key={priority}>
+                <div className="priority-column-heading">
+                  <h3>{priority}</h3>
+                  <span>{items.length}</span>
                 </div>
-                <dl className="todo-details">
-                  <div>
-                    <dt>Depends on</dt>
-                    <dd>{item.dependencies.length ? item.dependencies.join(", ") : "none"}</dd>
-                  </div>
-                  <div>
-                    <dt>Rationale</dt>
-                    <dd>{item.rationale}</dd>
-                  </div>
-                </dl>
-                <div className="criteria">
-                  <p className="section-label">Acceptance criteria</p>
-                  <MarkdownContent content={item.acceptanceCriteria} />
+                <div className="priority-column-items">
+                  {items.length ? items.map((item) => {
+                    const selected = selectedTodoId === item.id;
+                    const status = todoStatus(item.dependencies);
+                    return (
+                      <article
+                        className={`todo-card${status === "blocked" ? " blocked" : ""}${selected ? " selected" : ""}`}
+                        key={item.id}
+                      >
+                        <button
+                          aria-haspopup="dialog"
+                          aria-label={`Open ${item.title}`}
+                          className="todo-summary"
+                          id={`todo-${item.id}`}
+                          onClick={() => setSelectedTodoId(item.id)}
+                          type="button"
+                        >
+                          <span className="todo-title">{item.title}</span>
+                          <span aria-hidden="true" className="card-open-indicator">›</span>
+                          <span className="todo-metadata">
+                            <code>{item.id}</code>
+                            <span>{status}</span>
+                            <span>{item.category}</span>
+                            <span>{item.area}</span>
+                          </span>
+                        </button>
+                      </article>
+                    );
+                  }) : (
+                    <p className="priority-empty">No {priority} TODOs</p>
+                  )}
                 </div>
-              </article>
-            ))}
-          </div>
-        </>
+              </section>
+            );
+          })}
+        </div>
       ) : (
         <StatusMessage title="No open TODOs" body="This project has no structured unfinished work." />
       )}
       <PreservedContent content={document.preservedContent} />
+      {selectedTodo && (
+        <DetailWindow
+          id="todo-detail"
+          onClose={() => setSelectedTodoId(null)}
+          title={selectedTodo.title}
+        >
+          <div className="detail-window-metadata">
+            <code>{selectedTodo.id}</code>
+            <span className={`tag priority ${selectedTodo.priority}`}>{selectedTodo.priority}</span>
+            <span className={`tag status ${todoStatus(selectedTodo.dependencies)}`}>
+              {todoStatus(selectedTodo.dependencies)}
+            </span>
+            <span className="tag category">{selectedTodo.category}</span>
+            <span className="tag">{selectedTodo.area}</span>
+          </div>
+          <section>
+            <p className="section-label">Dependencies</p>
+            <div className="todo-dependencies" aria-label="TODO dependencies">
+              {selectedTodo.dependencies.length ? (
+                selectedTodo.dependencies.map((dependency) => (
+                  <code key={dependency}>{dependency}</code>
+                ))
+              ) : (
+                <span>None</span>
+              )}
+            </div>
+          </section>
+          <section>
+            <p className="section-label">Rationale</p>
+            <MarkdownContent content={selectedTodo.rationale} />
+          </section>
+          <section>
+            <p className="section-label">Acceptance criteria</p>
+            <MarkdownContent content={selectedTodo.acceptanceCriteria} />
+          </section>
+        </DetailWindow>
+      )}
     </div>
   );
 }
@@ -619,16 +776,13 @@ export function TodoPanel({
 export function HistoryPanel({
   document,
   source,
-  onTodo,
 }: {
   document: WorkHistoryDocument;
   source: ProjectDocument;
-  onTodo: (todoId: string) => void;
 }) {
   const [category, setCategory] = useState("all");
   const [area, setArea] = useState("all");
-  const [relatedTodo, setRelatedTodo] = useState("");
-  const [groupBy, setGroupBy] = useState<"category" | "area">("category");
+  const [selectedEntryKey, setSelectedEntryKey] = useState<string | null>(null);
 
   if (source.status === "missing") {
     return (
@@ -648,18 +802,16 @@ export function HistoryPanel({
     );
   }
 
-  const normalizedTodo = relatedTodo.trim().toUpperCase();
-  const filtered = document.entries.filter(
-    (entry) =>
-      (category === "all" || entry.category === category) &&
-      (area === "all" || entry.area === area) &&
-      (!normalizedTodo || entry.relatedTodos.includes(normalizedTodo)),
-  );
-  const grouped = filtered.reduce<Map<string, WorkHistoryEntry[]>>((groups, entry) => {
-    const key = groupBy === "category" ? entry.category : entry.area;
-    groups.set(key, [...(groups.get(key) ?? []), entry]);
-    return groups;
-  }, new Map());
+  const filtered = document.entries
+    .filter(
+      (entry) =>
+        (category === "all" || entry.category === category) &&
+        (area === "all" || entry.area === area),
+    )
+    .sort(compareHistoryNewestFirst);
+  const selectedEntry = document.entries.find(
+    (entry) => `${entry.occurredAt}-${entry.title}` === selectedEntryKey,
+  ) ?? null;
 
   return (
     <div className="structured-panel">
@@ -688,74 +840,130 @@ export function HistoryPanel({
             ))}
           </select>
         </label>
-        <label>
-          Related TODO
-          <input
-            value={relatedTodo}
-            onChange={(event) => setRelatedTodo(event.target.value)}
-            placeholder="TODO-001"
-          />
-        </label>
-        <label>
-          Group by
-          <select
-            value={groupBy}
-            onChange={(event) => setGroupBy(event.target.value as "category" | "area")}
-          >
-            <option value="category">Category</option>
-            <option value="area">Area</option>
-          </select>
-        </label>
       </div>
-      {grouped.size ? (
-        [...grouped.entries()].map(([group, entries]) => (
-          <section className="history-group" key={group}>
-            <h3>{group}</h3>
-            <div className="history-list">
-              {entries.map((entry) => (
-                <article
-                  className="history-card"
-                  key={`${entry.occurredAt}-${entry.title}`}
+      {filtered.length ? (
+        <div className="history-list">
+          {filtered.map((entry) => {
+            const entryKey = `${entry.occurredAt}-${entry.title}`;
+            const selected = selectedEntryKey === entryKey;
+            return (
+              <article
+                className={`history-card${selected ? " selected" : ""}`}
+                key={entryKey}
+              >
+                <button
+                  aria-haspopup="dialog"
+                  aria-label={`Open ${entry.title}`}
+                  className="history-summary"
+                  onClick={() => setSelectedEntryKey(entryKey)}
+                  type="button"
                 >
-                  <div className="history-heading">
-                    <div>
-                      <time>{formatLocalDateTime(entry.occurredAt)}</time>
-                      <h4>{entry.title}</h4>
-                    </div>
-                    <div className="tag-row">
-                      <span className="tag category">{entry.category}</span>
-                      <span className="tag">{entry.area}</span>
-                    </div>
-                  </div>
-                  {entry.relatedTodos.length > 0 && (
-                    <div className="related-todos">
-                      Related:
-                      {entry.relatedTodos.map((todoId) => (
-                        <button key={todoId} onClick={() => onTodo(todoId)}>
-                          {todoId}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                  <section>
-                    <p className="section-label">Summary</p>
-                    <MarkdownContent content={entry.summary} />
-                  </section>
-                  <section>
-                    <p className="section-label">Limitations</p>
-                    <MarkdownContent content={entry.limitations} />
-                  </section>
-                </article>
-              ))}
-            </div>
-          </section>
-        ))
+                  <span className="history-title">{entry.title}</span>
+                  <span aria-hidden="true" className="card-open-indicator">›</span>
+                  <span className="history-row-metadata">
+                    <time>{formatLocalDateTime(entry.occurredAt)}</time>
+                    <span className="tag category">{entry.category}</span>
+                    <span className="tag">{entry.area}</span>
+                  </span>
+                </button>
+              </article>
+            );
+          })}
+        </div>
       ) : (
         <StatusMessage title="No matching history" body="Adjust the filters to show entries." />
       )}
       <PreservedContent content={document.preservedContent} />
+      {selectedEntry && (
+        <DetailWindow
+          id="history-detail"
+          onClose={() => setSelectedEntryKey(null)}
+          title={selectedEntry.title}
+        >
+          <div className="detail-window-metadata">
+            <time>{formatLocalDateTime(selectedEntry.occurredAt)}</time>
+            <span className="tag category">{selectedEntry.category}</span>
+            <span className="tag">{selectedEntry.area}</span>
+          </div>
+          <section>
+            <p className="section-label">Summary</p>
+            <MarkdownContent content={selectedEntry.summary} />
+          </section>
+          <section>
+            <p className="section-label">Limitations</p>
+            <MarkdownContent content={selectedEntry.limitations} />
+          </section>
+        </DetailWindow>
+      )}
     </div>
   );
+}
+
+function DetailWindow({
+  children,
+  id,
+  initialFocusRef,
+  onClose,
+  title,
+}: {
+  children: ReactNode;
+  id: string;
+  initialFocusRef?: { current: HTMLElement | null };
+  onClose: () => void;
+  title: string;
+}) {
+  const closeButton = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    (initialFocusRef?.current ?? closeButton.current)?.focus();
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [initialFocusRef, onClose]);
+
+  return (
+    <div
+      className="detail-window-backdrop"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <section
+        aria-labelledby={`${id}-title`}
+        aria-modal="true"
+        className="detail-window"
+        role="dialog"
+      >
+        <header className="detail-window-header">
+          <div>
+            <p className="eyebrow">Details</p>
+            <h3 id={`${id}-title`}>{title}</h3>
+          </div>
+          <button
+            aria-label="Close details"
+            className="detail-window-close"
+            onClick={onClose}
+            ref={closeButton}
+            type="button"
+          >
+            ×
+          </button>
+        </header>
+        <div className="detail-window-body">{children}</div>
+      </section>
+    </div>
+  );
+}
+
+function compareHistoryNewestFirst(left: WorkHistoryEntry, right: WorkHistoryEntry) {
+  const leftTime = Date.parse(left.occurredAt);
+  const rightTime = Date.parse(right.occurredAt);
+  if (!Number.isNaN(leftTime) && !Number.isNaN(rightTime)) {
+    return rightTime - leftTime;
+  }
+  return right.occurredAt.localeCompare(left.occurredAt);
 }
 
 function StructuredHeader({
@@ -850,6 +1058,10 @@ function formatLocalDateTime(value: string): string {
         hour: "2-digit",
         minute: "2-digit",
       });
+}
+
+function todoStatus(dependencies: string[]): "planned" | "blocked" {
+  return dependencies.length > 0 ? "blocked" : "planned";
 }
 
 function formatRelative(value: string | null): string {

@@ -1,4 +1,5 @@
 mod agent_api;
+mod agent_instructions;
 mod git_sync;
 pub mod migration;
 mod models;
@@ -82,6 +83,39 @@ async fn register_project(
         .watch(&entry.path)
         .map_err(|error| {
             format!("Project was registered, but automatic refresh could not start: {error}")
+        })?;
+
+    let fetch_entry = entry.clone();
+    let snapshot = state.git_sync.snapshot(entry.id);
+    let project =
+        tauri::async_runtime::spawn_blocking(move || observer::summarize(&entry, &snapshot))
+            .await
+            .map_err(|error| format!("Unable to inspect project: {error}"))?;
+    state.git_sync.fetch(app, fetch_entry);
+    Ok(project)
+}
+
+#[tauri::command]
+async fn create_project(
+    parent_path: String,
+    name: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<ProjectSummary, String> {
+    let entry = state
+        .registry
+        .lock()
+        .map_err(|_| "The project registry is unavailable".to_string())?
+        .create_and_register(&PathBuf::from(parent_path), &name)
+        .map_err(|error| error.to_string())?;
+
+    state
+        .watcher
+        .lock()
+        .map_err(|_| "The project watcher is unavailable".to_string())?
+        .watch(&entry.path)
+        .map_err(|error| {
+            format!("Project was created, but automatic refresh could not start: {error}")
         })?;
 
     let fetch_entry = entry.clone();
@@ -200,12 +234,13 @@ async fn add_todo(
 #[tauri::command]
 async fn complete_todo(
     id: Uuid,
+    todo_id: String,
     input: CompleteTodoInput,
     state: State<'_, AppState>,
 ) -> Result<CompleteTodoResult, String> {
     let root = registered_root(id, &state)?;
     let service = Arc::clone(&state.project_state);
-    tauri::async_runtime::spawn_blocking(move || service.complete_todo(&root, input))
+    tauri::async_runtime::spawn_blocking(move || service.complete_todo(&root, &todo_id, input))
         .await
         .map_err(|error| format!("Unable to complete TODO: {error}"))?
         .map_err(|error| error.to_string())
@@ -272,6 +307,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_projects,
             register_project,
+            create_project,
             remove_project,
             open_project,
             refresh_project,

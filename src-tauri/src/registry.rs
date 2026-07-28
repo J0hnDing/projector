@@ -1,5 +1,6 @@
 use std::{
-    fs,
+    fs::{self, OpenOptions},
+    io::Write,
     path::{Path, PathBuf},
 };
 
@@ -7,6 +8,7 @@ use chrono::Utc;
 use thiserror::Error;
 use uuid::Uuid;
 
+use crate::agent_instructions::new_project_agents;
 use crate::models::{RegistryData, RegistryEntry};
 
 #[derive(Debug, Error)]
@@ -19,6 +21,10 @@ pub enum RegistryError {
     Json(#[from] serde_json::Error),
     #[error("Unsupported project registry version: {0}")]
     UnsupportedVersion(u8),
+    #[error("Project name is invalid: {0}")]
+    InvalidProjectName(String),
+    #[error("A file or folder already exists at the new project path: {0}")]
+    ProjectAlreadyExists(String),
 }
 
 pub struct RegistryStore {
@@ -89,6 +95,43 @@ impl RegistryStore {
         Ok(entry)
     }
 
+    pub fn create_and_register(
+        &mut self,
+        raw_parent: &Path,
+        raw_name: &str,
+    ) -> Result<RegistryEntry, RegistryError> {
+        let parent = raw_parent.canonicalize().map_err(|_| {
+            RegistryError::InvalidDirectory(raw_parent.to_string_lossy().into_owned())
+        })?;
+        if !parent.is_dir() {
+            return Err(RegistryError::InvalidDirectory(
+                raw_parent.to_string_lossy().into_owned(),
+            ));
+        }
+        let name = validate_project_name(raw_name)?;
+        let project = parent.join(&name);
+        if project.exists() {
+            return Err(RegistryError::ProjectAlreadyExists(
+                project.to_string_lossy().into_owned(),
+            ));
+        }
+
+        fs::create_dir(&project)?;
+        let result = (|| {
+            write_new_file(
+                &project.join("AGENTS.md"),
+                new_project_agents(&name).as_bytes(),
+            )?;
+            write_new_file(&project.join("TODO.md"), b"")?;
+            write_new_file(&project.join("WORK_HISTORY.md"), b"")?;
+            self.register(&project)
+        })();
+        if result.is_err() {
+            let _ = fs::remove_dir_all(&project);
+        }
+        result
+    }
+
     pub fn remove(&mut self, id: Uuid) -> Result<Option<RegistryEntry>, RegistryError> {
         let Some(index) = self.data.projects.iter().position(|entry| entry.id == id) else {
             return Ok(None);
@@ -122,6 +165,43 @@ impl RegistryStore {
         fs::write(&self.file_path, serde_json::to_vec_pretty(data)?)?;
         Ok(())
     }
+}
+
+fn validate_project_name(raw_name: &str) -> Result<String, RegistryError> {
+    let name = raw_name.trim();
+    if name.is_empty()
+        || matches!(name, "." | "..")
+        || name.ends_with('.')
+        || name.chars().any(|character| {
+            character.is_control()
+                || matches!(
+                    character,
+                    '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'
+                )
+        })
+    {
+        return Err(RegistryError::InvalidProjectName(
+            "Use a folder name without path separators, control characters, or Windows-reserved punctuation".into(),
+        ));
+    }
+    let stem = name.split('.').next().unwrap_or(name).to_ascii_uppercase();
+    if matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (stem.len() == 4
+            && (stem.starts_with("COM") || stem.starts_with("LPT"))
+            && stem.as_bytes()[3].is_ascii_digit()
+            && stem.as_bytes()[3] != b'0')
+    {
+        return Err(RegistryError::InvalidProjectName(
+            "That name is reserved by Windows".into(),
+        ));
+    }
+    Ok(name.to_string())
+}
+
+fn write_new_file(path: &Path, content: &[u8]) -> Result<(), std::io::Error> {
+    let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
+    file.write_all(content)?;
+    file.sync_all()
 }
 
 fn path_key(path: &Path) -> String {
@@ -178,6 +258,46 @@ mod tests {
 
         assert!(store.register(&file).is_err());
         assert!(store.register(&temp.path().join("missing")).is_err());
+        assert!(store.entries().is_empty());
+    }
+
+    #[test]
+    fn project_creation_initializes_files_and_registers_the_new_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut store = RegistryStore::load(temp.path().join("registry.json")).unwrap();
+
+        let entry = store
+            .create_and_register(temp.path(), "New Project")
+            .unwrap();
+
+        assert_eq!(entry.name, "New Project");
+        assert_eq!(store.entries().len(), 1);
+        assert_eq!(fs::read_to_string(entry.path.join("TODO.md")).unwrap(), "");
+        assert_eq!(
+            fs::read_to_string(entry.path.join("WORK_HISTORY.md")).unwrap(),
+            ""
+        );
+        let instructions = fs::read_to_string(entry.path.join("AGENTS.md")).unwrap();
+        assert!(instructions.contains("POST /projects/{projectId}/todos"));
+        assert!(instructions.contains("category"));
+        assert!(instructions.contains("do not follow it with a `work-history` call"));
+    }
+
+    #[test]
+    fn project_creation_rejects_unsafe_or_existing_names_without_modifying_them() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir(temp.path().join("Existing")).unwrap();
+        let mut store = RegistryStore::load(temp.path().join("registry.json")).unwrap();
+
+        assert!(
+            store
+                .create_and_register(temp.path(), "../outside")
+                .is_err()
+        );
+        assert!(store.create_and_register(temp.path(), "CON").is_err());
+        assert!(store.create_and_register(temp.path(), "Existing").is_err());
+        assert!(temp.path().join("Existing").is_dir());
+        assert!(!temp.path().join("outside").exists());
         assert!(store.entries().is_empty());
     }
 }

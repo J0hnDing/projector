@@ -1,7 +1,6 @@
 ## 2026-07-23 00:00 — Manual fast-forward pull
 
 - Category: feature
-- Related TODOs: none
 - Area: unknown
 
 ### Summary
@@ -17,7 +16,6 @@ none
 ## 2026-07-23 00:00 — Contributor guidance
 
 - Category: feature
-- Related TODOs: none
 - Area: unknown
 
 ### Summary
@@ -31,7 +29,6 @@ none
 ## 2026-07-23 00:00 — Git synchronization awareness
 
 - Category: feature
-- Related TODOs: none
 - Area: unknown
 
 ### Summary
@@ -48,7 +45,6 @@ none
 ## 2026-07-22 00:00 — Initial MVP
 
 - Category: feature
-- Related TODOs: none
 - Area: unknown
 
 ### Summary
@@ -73,7 +69,6 @@ none
 ## 2026-07-23 22:40 — Structured project management and local agent API
 
 - Category: feature
-- Related TODOs: none
 - Area: project-state-management
 
 ### Summary
@@ -83,3 +78,55 @@ Added one shared Rust parser, validator, deterministic writer, and locked mutati
 ### Limitations
 
 The API is available only while Projector runs. There is no MCP adapter, remote transport, generic file editing, project execution, or arbitrary shell access. Conservatively migrated unknown fields remain explicit unknown values.
+
+## 2026-07-24 17:47 — Compact priority TODO and chronological history views
+
+- Category: feature
+- Area: ui
+
+### Summary
+
+Replaced full inline TODO cards with four compact priority columns showing title and metadata, with selectable rationale and acceptance-criteria details. Removed the dependency visualization from the UI while preserving structured dependency validation. Replaced category-grouped working history cards with a newest-first title list and selectable summary and limitations details.
+
+### Limitations
+
+none
+
+## 2026-07-24 22:18 — Closable TODO and working-history detail windows
+
+- Category: refactor
+- Area: ui
+
+### Summary
+
+Moved TODO rationale and acceptance criteria, plus working-history summary and limitations, from inline expansion into a reusable closable detail window. Working-history rows now retain their date and time, category, and area in the compact newest-first list. Added close-button, backdrop, and Escape dismissal with focused dialog behavior and updated component tests.
+
+### Limitations
+
+The detail window is an in-app modal rather than a separate operating-system window.
+
+## 2026-07-27 21:52 — Unified agent API and project creation flow
+
+- Category: feature
+- Area: project-state
+
+### Summary
+
+Moved project and TODO identifiers into resource URLs, unified TODO and history categories, derived TODO state from dependencies, reduced completion to summary and limitations, removed related-TODO history data, and added safe UI project-folder creation with Projector instructions and empty state documents.
+
+### Limitations
+
+Existing structured TODO files without categories are read as others until rewritten or migrated. The running Projector instance must be restarted before the new routes are served.
+
+## 2026-07-27 23:08 — TODO category fields and filtering
+
+- Category: feature
+- Area: ui
+
+### Summary
+
+Added explicit feature or research categories to every existing Projector TODO and added category filtering to the TODO page while preserving the four priority columns and detail behavior. Added frontend coverage for filtering and updated the README capability description.
+
+### Limitations
+
+none

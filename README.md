@@ -4,12 +4,12 @@ Projector is a lightweight local desktop project manager shared by people and so
 
 ## MVP capabilities
 
-- Register and remove local project directories. Removing a project only removes its registry entry.
+- Create Projector-ready project folders or register existing local project directories. New projects receive `AGENTS.md`, `TODO.md`, and `WORK_HISTORY.md`; removing a project only removes its registry entry.
 - Show project name, path, Git branch, clean/dirty state, upstream relationship, last successful fetch, last repository activity, and last-opened time.
 - Render `README.md`, `TODO.md`, and work history (`WORK_HISTORY.md` or `WORKING_HISTORY.md`) from either the project root or `docs/`, using case-insensitive filename matching.
 - Parse TODOs and working history into validated structured records while preserving malformed or unrecognized source text.
-- Rank TODOs by critical, high, medium, then low; show blocked state, dependency relationships, missing references, and cycles.
-- Group and filter working history by category and area, filter by related TODO, and link related records.
+- Show TODOs in four compact critical, high, medium, and low priority columns with category filtering; title-and-metadata cards open dependencies, rationale, and acceptance criteria in a closable detail window while validation warnings remain visible.
+- Sort working history from newest to oldest; keep date/time, category, and area visible while opening summary and limitations in a closable detail window, with category and area filters.
 - Allow local agents to add TODOs, complete TODOs atomically with history, and add history through a loopback-only API.
 - Show up to 25 recent commits.
 - Run `git fetch --all --prune` in the background at startup and on manual refresh, then report ahead, behind, diverged, synchronized, or unknown status.
@@ -32,8 +32,8 @@ This split leaves a clear boundary for later services while keeping mutation aut
 ```markdown
 ## TODO-001: Display Git status
 
-- Status: planned
 - Priority: high
+- Category: feature
 - Area: git-observer
 - Dependencies: TODO-000
 - Rationale: Users should understand repository activity without opening a terminal.
@@ -42,7 +42,7 @@ This split leaves a clear boundary for later services while keeping mutation aut
 Display the current branch, working-tree status, recent commits, and last repository activity.
 ```
 
-IDs are stable and unique. Status is `planned` or `blocked`; priority is `critical`, `high`, `medium`, or `low`; dependencies are comma-separated IDs or `none`. A completed TODO is removed, its ID is removed from remaining dependency lists as a satisfied prerequisite, and a corresponding history entry is appended. Acceptance criteria is plain Markdown, not a checklist or percentage calculation.
+IDs are stable and unique. Priority is `critical`, `high`, `medium`, or `low`; category is `feature`, `bugfix`, `refactor`, `test`, `documentation`, `research`, or `others`; dependencies are comma-separated IDs or `none`. TODOs with dependencies are shown as blocked and TODOs without dependencies as planned; status is not stored separately. A completed TODO is removed, its ID is removed from remaining dependency lists as a satisfied prerequisite, and a corresponding history entry reuses the TODO title, category, and area. Acceptance criteria is plain Markdown, not a checklist or percentage calculation.
 
 `WORK_HISTORY.md` is append-oriented:
 
@@ -50,7 +50,6 @@ IDs are stable and unique. Status is `planned` or `blocked`; priority is `critic
 ## 2026-07-23 16:30 — Git status display implemented
 
 - Category: feature
-- Related TODOs: TODO-001
 - Area: git-observer
 
 ### Summary
@@ -62,17 +61,17 @@ Implemented branch, working-tree, recent commit, and repository activity display
 Submodule status is not yet supported.
 ```
 
-Categories are `feature`, `bugfix`, `refactor`, `test`, `documentation`, `research`, or `decision`. The UI displays entries newest first. Future malformed content is retained as preserved unrecognized content and exposed alongside validation warnings.
+Categories use the same values as TODOs. The UI displays entries newest first. Future malformed content is retained as preserved unrecognized content and exposed alongside validation warnings.
 
 ## Local agent API
 
 While Projector is running, its JSON API is bound only to `http://127.0.0.1:48721/v1`. `GET /projects` returns registered project IDs and `GET /projects/{projectId}/state` reads structured state. The only mutations are:
 
-- `POST /add_todo` (`add_todo`)
-- `POST /complete_todo` (`complete_todo`)
-- `POST /add_work_history` (`add_work_history`)
+- `POST /projects/{projectId}/todos`
+- `POST /projects/{projectId}/todos/{todoId}/complete`
+- `POST /projects/{projectId}/work-history`
 
-Each JSON mutation includes `projectId`. `add_todo` accepts `title`, `priority`, `area`, `dependencies`, `rationale`, `acceptanceCriteria`, and optional `status`. `complete_todo` accepts `todoId`, `historyTitle`, `category`, `area`, `summary`, and `limitations`. `add_work_history` accepts `title`, `category`, `relatedTodos`, `area`, `summary`, and `limitations`.
+Project and TODO IDs are URL parameters rather than redundant JSON fields. Adding a TODO accepts `title`, `priority`, `category`, `area`, `dependencies`, `rationale`, and `acceptanceCriteria`. Completing a TODO accepts only `summary` and `limitations`. Adding working history accepts `title`, `category`, `area`, `summary`, and `limitations`.
 
 The API rejects unknown registry IDs and never accepts a filesystem path. Completion validates the TODO and its dependencies, updates both documents under one service lock, rolls back the first replacement if the second fails, and returns both records. There is no arbitrary Markdown, filesystem, shell, Git, or runtime endpoint. The HTTP contract is intentionally small so a later MCP adapter can remain a thin compatibility layer.
 
@@ -107,7 +106,7 @@ Missing files are shown as missing. A document path that resolves outside the re
 
 The application stores `registered-projects.json` in the operating system application-data directory for the `com.local.projector` identifier. It contains only registry version, project ID, canonical location, display name, registration time, and last-opened time. A separate `git-sync-cache.json` stores only the last successful fetch time per project. Project content and Git history are never copied into application storage.
 
-Filesystem observation is created only for registered roots. Document and Git requests, including pull, use a registered project ID rather than accepting a path from the UI. Git worktrees whose `.git` metadata resolves outside the registered root are intentionally not inspected in the MVP.
+Filesystem observation is created only for registered roots. Project creation accepts a user-selected parent folder and a validated single folder name; after creation and registration, document and Git requests, including pull, use the registered project ID. Git worktrees whose `.git` metadata resolves outside the registered root are intentionally not inspected in the MVP.
 
 ## Development
 

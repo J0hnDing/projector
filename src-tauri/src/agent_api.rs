@@ -10,7 +10,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use uuid::Uuid;
 
 use crate::{
@@ -28,30 +28,6 @@ pub const AGENT_API_ADDR: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCA
 pub struct AgentApiContext {
     pub registry: Arc<Mutex<RegistryStore>>,
     pub project_state: Arc<ProjectStateService>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct AddTodoRequest {
-    project_id: Uuid,
-    #[serde(flatten)]
-    input: AddTodoInput,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct CompleteTodoRequest {
-    project_id: Uuid,
-    #[serde(flatten)]
-    input: CompleteTodoInput,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct AddWorkHistoryRequest {
-    project_id: Uuid,
-    #[serde(flatten)]
-    input: AddWorkHistoryInput,
 }
 
 #[derive(Debug, Serialize)]
@@ -126,9 +102,15 @@ fn router(context: AgentApiContext) -> Router {
         .route("/v1/health", get(health))
         .route("/v1/projects", get(list_projects))
         .route("/v1/projects/{project_id}/state", get(project_state))
-        .route("/v1/add_todo", post(add_todo))
-        .route("/v1/complete_todo", post(complete_todo))
-        .route("/v1/add_work_history", post(add_work_history))
+        .route("/v1/projects/{project_id}/todos", post(add_todo))
+        .route(
+            "/v1/projects/{project_id}/todos/{todo_id}/complete",
+            post(complete_todo),
+        )
+        .route(
+            "/v1/projects/{project_id}/work-history",
+            post(add_work_history),
+        )
         .with_state(context)
 }
 
@@ -165,37 +147,40 @@ async fn project_state(
 }
 
 async fn add_todo(
+    Path(project_id): Path<Uuid>,
     State(context): State<AgentApiContext>,
-    Json(request): Json<AddTodoRequest>,
+    Json(input): Json<AddTodoInput>,
 ) -> Result<(StatusCode, Json<TodoItem>), ApiError> {
-    let entry = registered_project(&context, request.project_id)?;
+    let entry = registered_project(&context, project_id)?;
     context
         .project_state
-        .add_todo(&entry.path, request.input)
+        .add_todo(&entry.path, input)
         .map(|item| (StatusCode::CREATED, Json(item)))
         .map_err(state_error)
 }
 
 async fn complete_todo(
+    Path((project_id, todo_id)): Path<(Uuid, String)>,
     State(context): State<AgentApiContext>,
-    Json(request): Json<CompleteTodoRequest>,
+    Json(input): Json<CompleteTodoInput>,
 ) -> Result<Json<CompleteTodoResult>, ApiError> {
-    let entry = registered_project(&context, request.project_id)?;
+    let entry = registered_project(&context, project_id)?;
     context
         .project_state
-        .complete_todo(&entry.path, request.input)
+        .complete_todo(&entry.path, &todo_id, input)
         .map(Json)
         .map_err(state_error)
 }
 
 async fn add_work_history(
+    Path(project_id): Path<Uuid>,
     State(context): State<AgentApiContext>,
-    Json(request): Json<AddWorkHistoryRequest>,
+    Json(input): Json<AddWorkHistoryInput>,
 ) -> Result<(StatusCode, Json<WorkHistoryEntry>), ApiError> {
-    let entry = registered_project(&context, request.project_id)?;
+    let entry = registered_project(&context, project_id)?;
     context
         .project_state
-        .add_work_history(&entry.path, request.input)
+        .add_work_history(&entry.path, input)
         .map(|entry| (StatusCode::CREATED, Json(entry)))
         .map_err(state_error)
 }
@@ -280,17 +265,29 @@ mod tests {
         (status, serde_json::from_slice(&bytes).unwrap())
     }
 
+    async fn request_status(app: Router, route: &str, value: Value) -> StatusCode {
+        app.oneshot(
+            Request::post(route)
+                .header("content-type", "application/json")
+                .body(Body::from(value.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .status()
+    }
+
     #[tokio::test]
     async fn api_supports_all_three_mutations_through_the_shared_service() {
         let (_temp, context, project_id) = test_context();
         let app = router(context.clone());
         let (status, todo) = json_request(
             app.clone(),
-            "/v1/add_todo",
+            &format!("/v1/projects/{project_id}/todos"),
             json!({
-                "projectId": project_id,
                 "title": "Structured state",
                 "priority": "high",
+                "category": "feature",
                 "area": "project-state",
                 "dependencies": [],
                 "rationale": "Agents need a bounded contract.",
@@ -303,12 +300,10 @@ mod tests {
 
         let (status, _) = json_request(
             app.clone(),
-            "/v1/add_work_history",
+            &format!("/v1/projects/{project_id}/work-history"),
             json!({
-                "projectId": project_id,
                 "title": "Research recorded",
                 "category": "research",
-                "relatedTodos": [],
                 "area": "project-state",
                 "summary": "Investigated the contract.",
                 "limitations": "none"
@@ -319,13 +314,8 @@ mod tests {
 
         let (status, completed) = json_request(
             app,
-            "/v1/complete_todo",
+            &format!("/v1/projects/{project_id}/todos/TODO-001/complete"),
             json!({
-                "projectId": project_id,
-                "todoId": "TODO-001",
-                "historyTitle": "Structured state implemented",
-                "category": "feature",
-                "area": "project-state",
                 "summary": "Implemented the contract.",
                 "limitations": "none"
             }),
@@ -333,7 +323,10 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(completed["completedTodo"]["id"], "TODO-001");
-        assert_eq!(completed["historyEntry"]["relatedTodos"][0], "TODO-001");
+        assert_eq!(completed["historyEntry"]["title"], "Structured state");
+        assert_eq!(completed["historyEntry"]["category"], "feature");
+        assert_eq!(completed["historyEntry"]["area"], "project-state");
+        assert!(completed["historyEntry"].get("relatedTodos").is_none());
     }
 
     #[tokio::test]
@@ -341,11 +334,11 @@ mod tests {
         let (_temp, context, _) = test_context();
         let (status, body) = json_request(
             router(context),
-            "/v1/add_todo",
+            &format!("/v1/projects/{}/todos", Uuid::new_v4()),
             json!({
-                "projectId": Uuid::new_v4(),
                 "title": "No",
                 "priority": "low",
+                "category": "others",
                 "area": "state",
                 "dependencies": [],
                 "rationale": "No",
@@ -355,5 +348,35 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(body["error"]["code"], "unknown_project");
+    }
+
+    #[tokio::test]
+    async fn redundant_body_identifiers_and_legacy_routes_are_rejected() {
+        let (_temp, context, project_id) = test_context();
+        let app = router(context);
+        let body = json!({
+            "projectId": project_id,
+            "title": "No redundant identifier",
+            "priority": "low",
+            "category": "others",
+            "area": "state",
+            "dependencies": [],
+            "rationale": "The URL owns identity.",
+            "acceptanceCriteria": "The body is rejected."
+        });
+
+        assert_eq!(
+            request_status(
+                app.clone(),
+                &format!("/v1/projects/{project_id}/todos"),
+                body.clone(),
+            )
+            .await,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+        assert_eq!(
+            request_status(app, "/v1/add_todo", body).await,
+            StatusCode::NOT_FOUND
+        );
     }
 }

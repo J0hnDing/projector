@@ -12,8 +12,8 @@ use thiserror::Error;
 
 use crate::models::{
     AddTodoInput, AddWorkHistoryInput, CompleteTodoInput, CompleteTodoResult, ProjectState,
-    TodoDocument, TodoItem, TodoPriority, TodoStatus, ValidationWarning, WorkCategory,
-    WorkHistoryDocument, WorkHistoryEntry,
+    TodoDocument, TodoItem, TodoPriority, ValidationWarning, WorkCategory, WorkHistoryDocument,
+    WorkHistoryEntry,
 };
 
 const TODO_FILE: &str = "TODO.md";
@@ -81,8 +81,8 @@ impl ProjectStateService {
         let item = TodoItem {
             id: next_todo_id(&document.items),
             title: input.title.trim().to_string(),
-            status: input.status,
             priority: input.priority,
+            category: input.category,
             area: input.area.trim().to_string(),
             dependencies: deduplicate(input.dependencies),
             rationale: input.rationale.trim().to_string(),
@@ -111,15 +111,14 @@ impl ProjectStateService {
     pub fn complete_todo(
         &self,
         root: &Path,
+        todo_id: &str,
         input: CompleteTodoInput,
     ) -> Result<CompleteTodoResult, ProjectStateError> {
         let _guard = self
             .write_lock
             .lock()
             .map_err(|_| ProjectStateError::Validation("The state writer is unavailable".into()))?;
-        validate_todo_id(&input.todo_id)?;
-        validate_nonempty("history title", &input.history_title)?;
-        validate_nonempty("area", &input.area)?;
+        validate_todo_id(todo_id)?;
         validate_nonempty("summary", &input.summary)?;
         validate_nonempty("limitations", &input.limitations)?;
 
@@ -133,10 +132,10 @@ impl ProjectStateService {
         ensure_mutable_todo_document(&todos)?;
         ensure_mutable_history_document(&history)?;
 
-        let Some(index) = todos.items.iter().position(|item| item.id == input.todo_id) else {
+        let Some(index) = todos.items.iter().position(|item| item.id == todo_id) else {
             return Err(ProjectStateError::Validation(format!(
                 "TODO {} does not exist",
-                input.todo_id
+                todo_id
             )));
         };
         let completed = todos.items[index].clone();
@@ -159,10 +158,9 @@ impl ProjectStateService {
 
         let history_entry = WorkHistoryEntry {
             occurred_at: local_minute(),
-            title: input.history_title.trim().to_string(),
-            category: input.category,
-            related_todos: vec![completed.id.clone()],
-            area: input.area.trim().to_string(),
+            title: completed.title.clone(),
+            category: completed.category,
+            area: completed.area.clone(),
             summary: input.summary.trim().to_string(),
             limitations: input.limitations.trim().to_string(),
         };
@@ -292,29 +290,6 @@ pub fn parse_todo_document(content: &str) -> TodoDocument {
             }
         }
 
-        let status = match fields
-            .get("status")
-            .map(|value| value.trim().to_lowercase())
-        {
-            Some(value) if value == "planned" => Some(TodoStatus::Planned),
-            Some(value) if value == "blocked" => Some(TodoStatus::Blocked),
-            Some(value) => {
-                warnings.push(warning(
-                    "invalid_status",
-                    &format!("Unsupported status `{value}`; expected planned or blocked."),
-                    Some(&id),
-                ));
-                None
-            }
-            None => {
-                warnings.push(warning(
-                    "missing_status",
-                    "Missing Status field.",
-                    Some(&id),
-                ));
-                None
-            }
-        };
         let priority = match fields
             .get("priority")
             .map(|value| value.trim().to_lowercase())
@@ -342,6 +317,27 @@ pub fn parse_todo_document(content: &str) -> TodoDocument {
                 None
             }
         };
+        let category = match fields.get("category") {
+            Some(value) => {
+                let parsed = parse_category(Some(value));
+                if parsed.is_none() {
+                    warnings.push(warning(
+                        "missing_or_invalid_category",
+                        "Invalid Category field.",
+                        Some(&id),
+                    ));
+                }
+                parsed
+            }
+            None => {
+                warnings.push(warning(
+                    "missing_category_defaulted",
+                    "Missing Category field was interpreted as others.",
+                    Some(&id),
+                ));
+                Some(WorkCategory::Others)
+            }
+        };
         let area = required_field(&fields, "area", &id, &mut warnings);
         let rationale = required_field(&fields, "rationale", &id, &mut warnings);
         let dependencies = match fields.get("dependencies") {
@@ -364,16 +360,16 @@ pub fn parse_todo_document(content: &str) -> TodoDocument {
             ));
         }
 
-        if let (Some(status), Some(priority), Some(area), Some(rationale)) =
-            (status, priority, area, rationale)
+        if let (Some(priority), Some(category), Some(area), Some(rationale)) =
+            (priority, category, area, rationale)
             && !title.trim().is_empty()
             && !acceptance_criteria.is_empty()
         {
             items.push(TodoItem {
                 id,
                 title: title.trim().to_string(),
-                status,
                 priority,
+                category,
                 area,
                 dependencies,
                 rationale,
@@ -463,8 +459,8 @@ pub fn render_todo_document(document: &TodoDocument) -> String {
             output.push('\n');
         }
         output.push_str(&format!("## {}: {}\n\n", item.id, item.title.trim()));
-        output.push_str(&format!("- Status: {}\n", todo_status(item.status)));
         output.push_str(&format!("- Priority: {}\n", todo_priority(item.priority)));
+        output.push_str(&format!("- Category: {}\n", work_category(item.category)));
         output.push_str(&format!("- Area: {}\n", item.area.trim()));
         output.push_str(&format!(
             "- Dependencies: {}\n",
@@ -532,10 +528,11 @@ pub fn parse_work_history_document(content: &str) -> WorkHistoryDocument {
                 continue;
             }
             if let Some((key, value)) = parse_field_line(line) {
-                if matches!(key.as_str(), "category" | "related todos" | "area")
-                    && section.is_empty()
-                {
+                if matches!(key.as_str(), "category" | "area") && section.is_empty() {
                     fields.insert(key, value.to_string());
+                    continue;
+                }
+                if key == "related todos" && section.is_empty() {
                     continue;
                 }
             }
@@ -562,17 +559,6 @@ pub fn parse_work_history_document(content: &str) -> WorkHistoryDocument {
         if area.is_none() {
             warnings.push(warning("missing_area", "Missing Area field.", None));
         }
-        let related_todos = fields
-            .get("related todos")
-            .map(|value| parse_id_list(value, "", "related TODOs", &mut warnings))
-            .unwrap_or_else(|| {
-                warnings.push(warning(
-                    "missing_related_todos",
-                    "Missing Related TODOs field.",
-                    None,
-                ));
-                Vec::new()
-            });
         let summary = summary.join("\n").trim().to_string();
         let limitations = limitations.join("\n").trim().to_string();
         if summary.is_empty() {
@@ -593,7 +579,6 @@ pub fn parse_work_history_document(content: &str) -> WorkHistoryDocument {
                 occurred_at,
                 title,
                 category,
-                related_todos,
                 area,
                 summary,
                 limitations,
@@ -643,14 +628,6 @@ pub fn render_work_history_document(document: &WorkHistoryDocument) -> String {
             entry.title.trim()
         ));
         output.push_str(&format!("- Category: {}\n", work_category(entry.category)));
-        output.push_str(&format!(
-            "- Related TODOs: {}\n",
-            if entry.related_todos.is_empty() {
-                "none".to_string()
-            } else {
-                entry.related_todos.join(", ")
-            }
-        ));
         output.push_str(&format!("- Area: {}\n\n", entry.area.trim()));
         output.push_str("### Summary\n\n");
         output.push_str(entry.summary.trim());
@@ -684,7 +661,6 @@ fn add_work_history_locked(
     validate_nonempty("area", &input.area)?;
     validate_nonempty("summary", &input.summary)?;
     validate_nonempty("limitations", &input.limitations)?;
-    validate_todo_ids(&input.related_todos, "related TODOs")?;
     let path = writable_document_path(root, HISTORY_FILE, HISTORY_ALIASES)?;
     let original = read_optional(&path)?;
     let mut document = parse_work_history_document(original.as_deref().unwrap_or(""));
@@ -693,7 +669,6 @@ fn add_work_history_locked(
         occurred_at: local_minute(),
         title: input.title.trim().to_string(),
         category: input.category,
-        related_todos: deduplicate(input.related_todos),
         area: input.area.trim().to_string(),
         summary: input.summary.trim().to_string(),
         limitations: input.limitations.trim().to_string(),
@@ -812,10 +787,9 @@ fn ensure_mutable_todo_document(document: &TodoDocument) -> Result<(), ProjectSt
                     | "invalid_todo_id"
                     | "missing_dependency"
                     | "circular_dependency"
-                    | "missing_status"
-                    | "invalid_status"
                     | "missing_priority"
                     | "invalid_priority"
+                    | "missing_or_invalid_category"
                     | "missing_area"
                     | "missing_rationale"
                     | "missing_acceptance_criteria"
@@ -838,7 +812,6 @@ fn ensure_mutable_history_document(
             warning.code.as_str(),
             "missing_or_invalid_category"
                 | "missing_area"
-                | "missing_related_todos"
                 | "missing_summary"
                 | "missing_limitations"
         )
@@ -1042,7 +1015,7 @@ fn parse_category(value: Option<&str>) -> Option<WorkCategory> {
         "test" => Some(WorkCategory::Test),
         "documentation" => Some(WorkCategory::Documentation),
         "research" => Some(WorkCategory::Research),
-        "decision" => Some(WorkCategory::Decision),
+        "others" | "decision" => Some(WorkCategory::Others),
         _ => None,
     }
 }
@@ -1154,13 +1127,6 @@ fn title_case(value: &str) -> String {
         .unwrap_or_default()
 }
 
-fn todo_status(status: TodoStatus) -> &'static str {
-    match status {
-        TodoStatus::Planned => "planned",
-        TodoStatus::Blocked => "blocked",
-    }
-}
-
 fn todo_priority(priority: TodoPriority) -> &'static str {
     match priority {
         TodoPriority::Critical => "critical",
@@ -1178,7 +1144,7 @@ fn work_category(category: WorkCategory) -> &'static str {
         WorkCategory::Test => "test",
         WorkCategory::Documentation => "documentation",
         WorkCategory::Research => "research",
-        WorkCategory::Decision => "decision",
+        WorkCategory::Others => "others",
     }
 }
 
@@ -1192,8 +1158,8 @@ mod tests {
         TodoItem {
             id: id.into(),
             title: format!("Task {id}"),
-            status: TodoStatus::Planned,
             priority,
+            category: WorkCategory::Feature,
             area: "state".into(),
             dependencies: dependencies.iter().map(|value| value.to_string()).collect(),
             rationale: "Needed.".into(),
@@ -1229,7 +1195,9 @@ mod tests {
         );
         assert_eq!(parsed.items.len(), 1);
         assert_eq!(parsed.items[0].priority, TodoPriority::Medium);
+        assert_eq!(parsed.items[0].category, WorkCategory::Others);
         assert_eq!(parsed.items[0].area, "Backend / adapters");
+        assert!(!render_todo_document(&parsed).contains("- Status:"));
     }
 
     #[test]
@@ -1309,11 +1277,8 @@ mod tests {
         let result = service
             .complete_todo(
                 temp.path(),
+                "TODO-001",
                 CompleteTodoInput {
-                    todo_id: "TODO-001".into(),
-                    history_title: "First task completed".into(),
-                    category: WorkCategory::Feature,
-                    area: "state".into(),
                     summary: "Implemented it.".into(),
                     limitations: "none".into(),
                 },
@@ -1323,7 +1288,12 @@ mod tests {
         let state = service.inspect(temp.path()).unwrap();
         assert_eq!(state.todos.items.len(), 1);
         assert!(state.todos.items[0].dependencies.is_empty());
-        assert_eq!(state.working_history.entries[0].related_todos, ["TODO-001"]);
+        assert_eq!(state.working_history.entries[0].title, "Task TODO-001");
+        assert_eq!(
+            state.working_history.entries[0].category,
+            WorkCategory::Feature
+        );
+        assert_eq!(state.working_history.entries[0].area, "state");
     }
 
     #[test]
@@ -1340,11 +1310,8 @@ mod tests {
         fs::write(temp.path().join("WORK_HISTORY.md"), "").unwrap();
         let result = service.complete_todo(
             temp.path(),
+            "TODO-001",
             CompleteTodoInput {
-                todo_id: "TODO-001".into(),
-                history_title: "Should fail".into(),
-                category: WorkCategory::Feature,
-                area: "state".into(),
                 summary: "No change.".into(),
                 limitations: "none".into(),
             },
@@ -1376,11 +1343,11 @@ mod tests {
                             AddTodoInput {
                                 title: format!("Task {index}"),
                                 priority: TodoPriority::Medium,
+                                category: WorkCategory::Others,
                                 area: "state".into(),
                                 dependencies: Vec::new(),
                                 rationale: "Needed.".into(),
                                 acceptance_criteria: "Done.".into(),
-                                status: TodoStatus::Planned,
                             },
                         )
                         .unwrap()
