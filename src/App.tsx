@@ -7,6 +7,7 @@ import remarkGfm from "remark-gfm";
 
 import * as api from "./api";
 import type {
+  CompletionProposal,
   GitInfo,
   ProjectDetail,
   ProjectDocument,
@@ -19,12 +20,13 @@ import type {
   WorkHistoryEntry,
 } from "./types";
 
-type Tab = "overview" | "readme" | "todo" | "history" | "git";
+type Tab = "overview" | "readme" | "todo" | "pending" | "history" | "git";
 
 const tabs: Array<{ id: Tab; label: string }> = [
   { id: "overview", label: "Overview" },
   { id: "readme", label: "README" },
   { id: "todo", label: "TODO" },
+  { id: "pending", label: "Pending Review" },
   { id: "history", label: "Working history" },
   { id: "git", label: "Git activity" },
 ];
@@ -55,6 +57,7 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [pulling, setPulling] = useState(false);
+  const [reviewingProposal, setReviewingProposal] = useState<string | null>(null);
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [creatingProject, setCreatingProject] = useState(false);
   const [newProjectName, setNewProjectName] = useState("");
@@ -138,6 +141,33 @@ export default function App() {
       if (refreshTimer.current) clearTimeout(refreshTimer.current);
     };
   }, [loadProjects, openProject]);
+
+  useEffect(() => {
+    if (!selectedId) return;
+    let active = true;
+    const updatePendingReviews = async () => {
+      try {
+        const pendingReviews = await api.listPendingReviews(selectedId);
+        if (!active) return;
+        setDetail((current) => current?.project.id === selectedId
+          ? {
+              ...current,
+              state: { ...current.state, pendingReviews },
+            }
+          : current);
+      } catch (reason) {
+        if (active) {
+          setError(`Completion review updates are unavailable: ${messageFrom(reason)}`);
+        }
+      }
+    };
+    void updatePendingReviews();
+    const timer = window.setInterval(() => void updatePendingReviews(), 2_000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [selectedId]);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -250,6 +280,36 @@ export default function App() {
     }
   };
 
+  const approveCompletion = async (proposalId: string) => {
+    const id = selectedIdRef.current;
+    if (!id) return;
+    try {
+      setError(null);
+      setReviewingProposal(proposalId);
+      await api.approveCompletion(id, proposalId);
+      await openProject(id, false, false);
+    } catch (reason) {
+      setError(messageFrom(reason));
+    } finally {
+      setReviewingProposal(null);
+    }
+  };
+
+  const rejectCompletion = async (proposalId: string) => {
+    const id = selectedIdRef.current;
+    if (!id) return;
+    try {
+      setError(null);
+      setReviewingProposal(proposalId);
+      await api.rejectCompletion(id, proposalId);
+      await openProject(id, false, false);
+    } catch (reason) {
+      setError(messageFrom(reason));
+    } finally {
+      setReviewingProposal(null);
+    }
+  };
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -307,10 +367,13 @@ export default function App() {
             tab={tab}
             refreshing={refreshing}
             pulling={pulling}
+            reviewingProposal={reviewingProposal}
             onTab={setTab}
             onRefresh={() => void refresh()}
             onPull={() => void pull()}
             onRemove={() => void remove()}
+            onApproveCompletion={(proposalId) => void approveCompletion(proposalId)}
+            onRejectCompletion={(proposalId) => void rejectCompletion(proposalId)}
           />
         ) : (
           <CenteredMessage
@@ -399,15 +462,30 @@ function ProjectListItem({ project, selected, onSelect }: { project: ProjectSumm
   );
 }
 
-function ProjectView({ detail, tab, refreshing, pulling, onTab, onRefresh, onPull, onRemove }: {
+function ProjectView({
+  detail,
+  tab,
+  refreshing,
+  pulling,
+  reviewingProposal,
+  onTab,
+  onRefresh,
+  onPull,
+  onRemove,
+  onApproveCompletion,
+  onRejectCompletion,
+}: {
   detail: ProjectDetail;
   tab: Tab;
   refreshing: boolean;
   pulling: boolean;
+  reviewingProposal: string | null;
   onTab: (tab: Tab) => void;
   onRefresh: () => void;
   onPull: () => void;
   onRemove: () => void;
+  onApproveCompletion: (proposalId: string) => void;
+  onRejectCompletion: (proposalId: string) => void;
 }) {
   const pullUnavailableReason = getPullUnavailableReason(detail.project.git);
   return (
@@ -446,6 +524,9 @@ function ProjectView({ detail, tab, refreshing, pulling, onTab, onRefresh, onPul
             onClick={() => onTab(item.id)}
           >
             {item.label}
+            {item.id === "pending" && detail.state.pendingReviews.length > 0 && (
+              <span className="tab-count">{detail.state.pendingReviews.length}</span>
+            )}
           </button>
         ))}
       </div>
@@ -455,6 +536,14 @@ function ProjectView({ detail, tab, refreshing, pulling, onTab, onRefresh, onPul
         {tab === "readme" && <DocumentPanel document={detail.documents.readme} />}
         {tab === "todo" && (
           <TodoPanel document={detail.state.todos} source={detail.documents.todo} />
+        )}
+        {tab === "pending" && (
+          <PendingReviewPanel
+            proposals={detail.state.pendingReviews}
+            reviewingProposal={reviewingProposal}
+            onApprove={onApproveCompletion}
+            onReject={onRejectCompletion}
+          />
         )}
         {tab === "history" && (
           <HistoryPanel
@@ -773,6 +862,101 @@ export function TodoPanel({
   );
 }
 
+export function PendingReviewPanel({
+  proposals,
+  reviewingProposal,
+  onApprove,
+  onReject,
+}: {
+  proposals: CompletionProposal[];
+  reviewingProposal: string | null;
+  onApprove: (proposalId: string) => void;
+  onReject: (proposalId: string) => void;
+}) {
+  return (
+    <div className="structured-panel pending-review-panel">
+      <StructuredHeader
+        path="Projector internal storage"
+        count={proposals.length}
+        noun="pending proposal"
+      />
+      <div className="notice">
+        Review requests do not change project files until you approve them.
+      </div>
+      {proposals.length ? (
+        <section aria-label="Pending review proposals" className="pending-review-list">
+          {proposals.map((proposal) => {
+            const busy = reviewingProposal === proposal.id;
+            const reviewInProgress = reviewingProposal !== null;
+            return (
+              <article className="panel pending-review-card" key={proposal.id}>
+                <header>
+                  <div>
+                    <h3>{proposal.proposedEntry.title}</h3>
+                    <div className="detail-window-metadata">
+                      <span className="tag">
+                        {proposal.kind === "todoCompletion"
+                          ? "TODO completion"
+                          : "Working history"}
+                      </span>
+                      {proposal.todo && (
+                        <>
+                          <code>{proposal.todo.id}</code>
+                          <span className={`tag priority ${proposal.todo.priority}`}>
+                            {proposal.todo.priority}
+                          </span>
+                        </>
+                      )}
+                      <span className="tag category">
+                        {proposal.proposedEntry.category}
+                      </span>
+                      <span className="tag">{proposal.proposedEntry.area}</span>
+                    </div>
+                  </div>
+                  <time dateTime={proposal.requestedAt}>
+                    Requested {formatDate(proposal.requestedAt)}
+                  </time>
+                </header>
+                <section>
+                  <p className="section-label">Proposed summary</p>
+                  <MarkdownContent content={proposal.proposedEntry.summary} />
+                </section>
+                <section>
+                  <p className="section-label">Proposed limitations</p>
+                  <MarkdownContent content={proposal.proposedEntry.limitations} />
+                </section>
+                <footer className="review-actions">
+                  <button
+                    className="secondary-button danger-button"
+                    disabled={reviewInProgress}
+                    onClick={() => onReject(proposal.id)}
+                    type="button"
+                  >
+                    {busy ? "Reviewing…" : "Reject"}
+                  </button>
+                  <button
+                    className="primary-button"
+                    disabled={reviewInProgress}
+                    onClick={() => onApprove(proposal.id)}
+                    type="button"
+                  >
+                    {busy ? "Reviewing…" : "Approve"}
+                  </button>
+                </footer>
+              </article>
+            );
+          })}
+        </section>
+      ) : (
+        <StatusMessage
+          title="No pending reviews"
+          body="Agent completion and working-history requests will appear here for approval or rejection."
+        />
+      )}
+    </div>
+  );
+}
+
 export function HistoryPanel({
   document,
   source,
@@ -788,7 +972,7 @@ export function HistoryPanel({
     return (
       <StatusMessage
         title="WORK_HISTORY.md was not found"
-        body="Projector's add_work_history operation can create the first structured entry."
+        body="Projector's add_work_history operation can propose the first structured entry for review."
       />
     );
   }

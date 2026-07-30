@@ -10,7 +10,8 @@ Projector is a lightweight local desktop project manager shared by people and so
 - Parse TODOs and working history into validated structured records while preserving malformed or unrecognized source text.
 - Show TODOs in four compact critical, high, medium, and low priority columns with category filtering; title-and-metadata cards open dependencies, rationale, and acceptance criteria in a closable detail window while validation warnings remain visible.
 - Sort working history from newest to oldest; keep date/time, category, and area visible while opening summary and limitations in a closable detail window, with category and area filters.
-- Allow local agents to add TODOs, complete TODOs atomically with history, and add history through a loopback-only API.
+- Allow local agents to add TODOs and propose either TODO completion or standalone working-history entries through a loopback-only API. Pending proposals stay in Projector's internal storage until the user approves or rejects them.
+- Show all pending proposals in a dedicated review tab with local-only Approve and Reject actions.
 - Show up to 25 recent commits.
 - Run `git fetch --all --prune` in the background at startup and on manual refresh, then report ahead, behind, diverged, synchronized, or unknown status.
 - Manually pull the selected project with fast-forward-only semantics when it has a checked-out upstream branch and a clean working tree.
@@ -42,7 +43,7 @@ This split leaves a clear boundary for later services while keeping mutation aut
 Display the current branch, working-tree status, recent commits, and last repository activity.
 ```
 
-IDs are stable and unique. Priority is `critical`, `high`, `medium`, or `low`; category is `feature`, `bugfix`, `refactor`, `test`, `documentation`, `research`, or `others`; dependencies are comma-separated IDs or `none`. TODOs with dependencies are shown as blocked and TODOs without dependencies as planned; status is not stored separately. A completed TODO is removed, its ID is removed from remaining dependency lists as a satisfied prerequisite, and a corresponding history entry reuses the TODO title, category, and area. Acceptance criteria is plain Markdown, not a checklist or percentage calculation.
+IDs are stable and unique. Priority is `critical`, `high`, `medium`, or `low`; category is `feature`, `bugfix`, `refactor`, `test`, `documentation`, `research`, or `others`; dependencies are comma-separated IDs or `none`. TODOs with dependencies are shown as blocked and TODOs without dependencies as planned; status is not stored separately. A completion request leaves the TODO unchanged while Projector stores a pending proposal internally. When the user approves it, the TODO is removed, its ID is removed from remaining dependency lists as a satisfied prerequisite, and the proposed history entry reuses the TODO title, category, and area. Rejection discards only the proposal. Acceptance criteria is plain Markdown, not a checklist or percentage calculation.
 
 `WORK_HISTORY.md` is append-oriented:
 
@@ -71,9 +72,9 @@ While Projector is running, its JSON API is bound only to `http://127.0.0.1:4872
 - `POST /projects/{projectId}/todos/{todoId}/complete`
 - `POST /projects/{projectId}/work-history`
 
-Project and TODO IDs are URL parameters rather than redundant JSON fields. Adding a TODO accepts `title`, `priority`, `category`, `area`, `dependencies`, `rationale`, and `acceptanceCriteria`. Completing a TODO accepts only `summary` and `limitations`. Adding working history accepts `title`, `category`, `area`, `summary`, and `limitations`.
+Project and TODO IDs are URL parameters rather than redundant JSON fields. Adding a TODO accepts `title`, `priority`, `category`, `area`, `dependencies`, `rationale`, and `acceptanceCriteria`. Requesting TODO completion accepts only `summary` and `limitations` and returns a pending proposal with `kind: "todoCompletion"`, the `todo` snapshot, and `proposedEntry`. Proposing standalone working history accepts `title`, `category`, `area`, `summary`, and `limitations` and returns the same proposal shape with `kind: "workHistory"` and `todo: null`. Both proposal variants also contain `id`, `projectId`, and `requestedAt`.
 
-The API rejects unknown registry IDs and never accepts a filesystem path. Completion validates the TODO and its dependencies, updates both documents under one service lock, rolls back the first replacement if the second fails, and returns both records. There is no arbitrary Markdown, filesystem, shell, Git, or runtime endpoint. The HTTP contract is intentionally small so a later MCP adapter can remain a thin compatibility layer.
+The API rejects unknown registry IDs and never accepts a filesystem path. A completion request validates the TODO and its dependencies and rejects a duplicate request while that TODO already has a pending proposal. A standalone history request validates the proposed entry and current history document. Both store and return a proposal without changing project Markdown. Agents have no approval or rejection endpoint. The desktop's local-only approval action branches by proposal kind: TODO completion revalidates the live TODO snapshot and updates both documents with rollback, while standalone history atomically appends only its proposed entry. In both cases the persisted proposal is removed only after the project-file mutation succeeds; rejection removes only the proposal. There is no arbitrary Markdown, filesystem, shell, Git, or runtime endpoint. The HTTP contract is intentionally small so a later MCP adapter can remain a thin compatibility layer.
 
 Agents working in registered projects must use these operations rather than directly modifying `TODO.md` or `WORK_HISTORY.md`.
 
@@ -104,7 +105,7 @@ Missing files are shown as missing. A document path that resolves outside the re
 
 ## Local data and access
 
-The application stores `registered-projects.json` in the operating system application-data directory for the `com.local.projector` identifier. It contains only registry version, project ID, canonical location, display name, registration time, and last-opened time. A separate `git-sync-cache.json` stores only the last successful fetch time per project. Project content and Git history are never copied into application storage.
+The application stores `registered-projects.json` in the operating system application-data directory for the `com.local.projector` identifier. It contains only registry version, project ID, canonical location, display name, registration time, and last-opened time. A separate `git-sync-cache.json` stores only the last successful fetch time per project. Pending review proposals are stored in `completion-proposals.json`; each contains its kind, registered project ID, proposed history entry, request time, and, for TODO completion, the TODO snapshot needed for stale-proposal validation. This explicitly permitted internal proposal storage lets reviews survive restarts. Other project content and Git history are not copied into application storage.
 
 Filesystem observation is created only for registered roots. Project creation accepts a user-selected parent folder and a validated single folder name; after creation and registration, document and Git requests, including pull, use the registered project ID. Git worktrees whose `.git` metadata resolves outside the registered root are intentionally not inspected in the MVP.
 
@@ -143,6 +144,6 @@ The project-local `@tauri-apps/cli` is used; a global Tauri CLI installation is 
 - The supported filename aliases and root-before-`docs/` lookup order are fixed for the MVP.
 - The registry has no import/export, path relocation, or custom project naming yet.
 - The loopback API is available only while the Projector desktop process is running and has no remote transport.
-- Multi-file completion provides in-process rollback if a replacement fails; it does not claim a distributed transaction across storage devices.
+- Multi-file approval provides in-process rollback if a replacement fails; it does not claim a distributed transaction across storage devices.
 - Migrated legacy entries without a source time use `00:00`; absent areas use `unknown`; absent limitations use `none`.
 - This milestone has no project execution, runtime health monitoring, arbitrary file editing, MCP adapter, cloud synchronization, analytics, or team features.

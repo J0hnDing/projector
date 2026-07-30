@@ -5,12 +5,12 @@ Projector is authoritative for structured TODO and working-history mutations. Do
 Use Projector's local API at `http://127.0.0.1:48721/v1`. Projector must be running; resolve the registered project ID with `GET /projects`.
 
 - `POST /projects/{projectId}/todos`: `title`, `priority` (`critical|high|medium|low`), `category` (`feature|bugfix|refactor|test|documentation|research|others`), `area`, `dependencies` (TODO ID array), `rationale`, and `acceptanceCriteria`.
-- `POST /projects/{projectId}/todos/{todoId}/complete`: `summary` and `limitations`.
-- `POST /projects/{projectId}/work-history`: `title`, `category`, `area`, `summary`, and `limitations`.
+- `POST /projects/{projectId}/todos/{todoId}/complete`: `summary` and `limitations`; returns a pending proposal with `id`, `projectId`, `requestedAt`, `kind: "todoCompletion"`, the `todo` snapshot, and `proposedEntry`.
+- `POST /projects/{projectId}/work-history`: `title`, `category`, `area`, `summary`, and `limitations`; returns a pending proposal with `id`, `projectId`, `requestedAt`, `kind: "workHistory"`, `todo: null`, and `proposedEntry`.
 
-Use `POST /projects/{projectId}/todos` to record unfinished actionable work. Use `POST /projects/{projectId}/todos/{todoId}/complete` when that TODO is finished; completion atomically removes the TODO and creates its working-history entry, so do not follow it with a `work-history` call. Use `POST /projects/{projectId}/work-history` only for notable completed work that was not represented by an open TODO.
+Use `POST /projects/{projectId}/todos` to record unfinished actionable work. Use `POST /projects/{projectId}/todos/{todoId}/complete` when that TODO is finished. Use `POST /projects/{projectId}/work-history` only for notable completed work that was not represented by an open TODO.
 
-Send JSON with camel-case field names. Use an empty array when a TODO has no dependencies and use `none` when there are no known limitations. TODO status is derived: a TODO with dependencies is blocked; otherwise it is planned.
+Send JSON with camel-case field names. Use an empty array when a TODO has no dependencies and use `none` when there are no known limitations.
 "#;
 
 pub fn new_project_agents(project_name: &str) -> String {

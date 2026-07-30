@@ -6,14 +6,16 @@ use std::{
     sync::Mutex,
 };
 
-use chrono::{Local, NaiveDateTime, Timelike};
+use chrono::{Local, NaiveDateTime, Timelike, Utc};
+use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
 use thiserror::Error;
+use uuid::Uuid;
 
 use crate::models::{
-    AddTodoInput, AddWorkHistoryInput, CompleteTodoInput, CompleteTodoResult, ProjectState,
-    TodoDocument, TodoItem, TodoPriority, ValidationWarning, WorkCategory, WorkHistoryDocument,
-    WorkHistoryEntry,
+    AddTodoInput, AddWorkHistoryInput, CompleteTodoInput, CompleteTodoResult, CompletionProposal,
+    ProjectState, ProposalKind, TodoDocument, TodoItem, TodoPriority, ValidationWarning,
+    WorkCategory, WorkHistoryDocument, WorkHistoryEntry,
 };
 
 const TODO_FILE: &str = "TODO.md";
@@ -29,23 +31,82 @@ pub enum ProjectStateError {
     Validation(String),
     #[error("Unable to update project state: {0}")]
     Io(#[from] io::Error),
+    #[error("Pending review storage is invalid: {0}")]
+    ProposalStorage(String),
 }
 
 pub struct ProjectStateService {
     write_lock: Mutex<()>,
+    proposal_file: Option<PathBuf>,
+    proposals: Mutex<CompletionProposalData>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CompletionProposalData {
+    version: u8,
+    proposals: Vec<CompletionProposal>,
+}
+
+impl Default for CompletionProposalData {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            proposals: Vec::new(),
+        }
+    }
 }
 
 impl Default for ProjectStateService {
     fn default() -> Self {
         Self {
             write_lock: Mutex::new(()),
+            proposal_file: None,
+            proposals: Mutex::new(CompletionProposalData::default()),
         }
     }
 }
 
 impl ProjectStateService {
+    pub fn load(proposal_file: PathBuf) -> Result<Self, ProjectStateError> {
+        let proposals = if proposal_file.exists() {
+            serde_json::from_slice::<CompletionProposalData>(&fs::read(&proposal_file)?)
+                .map_err(|error| ProjectStateError::ProposalStorage(error.to_string()))?
+        } else {
+            CompletionProposalData::default()
+        };
+        if proposals.version != 1 {
+            return Err(ProjectStateError::ProposalStorage(format!(
+                "Unsupported pending review storage version {}",
+                proposals.version
+            )));
+        }
+        Ok(Self {
+            write_lock: Mutex::new(()),
+            proposal_file: Some(proposal_file),
+            proposals: Mutex::new(proposals),
+        })
+    }
+
     pub fn inspect(&self, root: &Path) -> Result<ProjectState, ProjectStateError> {
         inspect_project_state(root)
+    }
+
+    pub fn pending_reviews(
+        &self,
+        project_id: Uuid,
+    ) -> Result<Vec<CompletionProposal>, ProjectStateError> {
+        let proposals = self.proposals.lock().map_err(|_| {
+            ProjectStateError::ProposalStorage("The proposal store is unavailable".into())
+        })?;
+        let mut pending: Vec<_> = proposals
+            .proposals
+            .iter()
+            .filter(|proposal| proposal.project_id == project_id)
+            .cloned()
+            .collect();
+        pending.sort_by(|left, right| right.requested_at.cmp(&left.requested_at));
+        Ok(pending)
     }
 
     pub fn add_todo(
@@ -97,23 +158,57 @@ impl ProjectStateService {
 
     pub fn add_work_history(
         &self,
+        project_id: Uuid,
         root: &Path,
         input: AddWorkHistoryInput,
-    ) -> Result<WorkHistoryEntry, ProjectStateError> {
+    ) -> Result<CompletionProposal, ProjectStateError> {
         let _guard = self
             .write_lock
             .lock()
             .map_err(|_| ProjectStateError::Validation("The state writer is unavailable".into()))?;
+        validate_nonempty("title", &input.title)?;
+        validate_nonempty("area", &input.area)?;
+        validate_nonempty("summary", &input.summary)?;
+        validate_nonempty("limitations", &input.limitations)?;
+
         let root = canonical_root(root)?;
-        add_work_history_locked(&root, input)
+        let history_path = writable_document_path(&root, HISTORY_FILE, HISTORY_ALIASES)?;
+        let history_original = read_optional(&history_path)?;
+        let history = parse_work_history_document(history_original.as_deref().unwrap_or(""));
+        ensure_mutable_history_document(&history)?;
+
+        let proposal = CompletionProposal {
+            id: Uuid::new_v4(),
+            project_id,
+            requested_at: Utc::now(),
+            kind: ProposalKind::WorkHistory,
+            todo: None,
+            proposed_entry: WorkHistoryEntry {
+                occurred_at: local_minute(),
+                title: input.title.trim().to_string(),
+                category: input.category,
+                area: input.area.trim().to_string(),
+                summary: input.summary.trim().to_string(),
+                limitations: input.limitations.trim().to_string(),
+            },
+        };
+        let mut proposals = self.proposals.lock().map_err(|_| {
+            ProjectStateError::ProposalStorage("The proposal store is unavailable".into())
+        })?;
+        let mut next = proposals.clone();
+        next.proposals.push(proposal.clone());
+        self.persist_proposals(&next)?;
+        *proposals = next;
+        Ok(proposal)
     }
 
     pub fn complete_todo(
         &self,
+        project_id: Uuid,
         root: &Path,
         todo_id: &str,
         input: CompleteTodoInput,
-    ) -> Result<CompleteTodoResult, ProjectStateError> {
+    ) -> Result<CompletionProposal, ProjectStateError> {
         let _guard = self
             .write_lock
             .lock()
@@ -124,59 +219,209 @@ impl ProjectStateService {
 
         let root = canonical_root(root)?;
         let todo_path = writable_document_path(&root, TODO_FILE, TODO_ALIASES)?;
-        let history_path = writable_document_path(&root, HISTORY_FILE, HISTORY_ALIASES)?;
         let todo_original = read_optional(&todo_path)?;
-        let history_original = read_optional(&history_path)?;
-        let mut todos = parse_todo_document(todo_original.as_deref().unwrap_or(""));
-        let mut history = parse_work_history_document(history_original.as_deref().unwrap_or(""));
+        let todos = parse_todo_document(todo_original.as_deref().unwrap_or(""));
         ensure_mutable_todo_document(&todos)?;
-        ensure_mutable_history_document(&history)?;
 
-        let Some(index) = todos.items.iter().position(|item| item.id == todo_id) else {
+        let Some(todo) = todos.items.iter().find(|item| item.id == todo_id).cloned() else {
             return Err(ProjectStateError::Validation(format!(
                 "TODO {} does not exist",
                 todo_id
             )));
         };
-        let completed = todos.items[index].clone();
-        for dependency in &completed.dependencies {
+        for dependency in &todo.dependencies {
             if !todos.items.iter().any(|item| &item.id == dependency) {
                 return Err(ProjectStateError::Validation(format!(
                     "TODO {} references missing dependency {dependency}",
-                    completed.id
+                    todo.id
                 )));
             }
         }
 
-        todos.items.remove(index);
-        for item in &mut todos.items {
-            item.dependencies
-                .retain(|dependency| dependency != &completed.id);
+        let mut proposals = self.proposals.lock().map_err(|_| {
+            ProjectStateError::ProposalStorage("The proposal store is unavailable".into())
+        })?;
+        if proposals.proposals.iter().any(|proposal| {
+            proposal.project_id == project_id
+                && proposal
+                    .todo
+                    .as_ref()
+                    .is_some_and(|todo| todo.id == todo_id)
+        }) {
+            return Err(ProjectStateError::Validation(format!(
+                "TODO {todo_id} already has a pending completion proposal"
+            )));
         }
-        todos.warnings = validate_todos(&todos.items);
-        ensure_mutable_todo_document(&todos)?;
 
-        let history_entry = WorkHistoryEntry {
-            occurred_at: local_minute(),
-            title: completed.title.clone(),
-            category: completed.category,
-            area: completed.area.clone(),
-            summary: input.summary.trim().to_string(),
-            limitations: input.limitations.trim().to_string(),
+        let proposal = CompletionProposal {
+            id: Uuid::new_v4(),
+            project_id,
+            requested_at: Utc::now(),
+            kind: ProposalKind::TodoCompletion,
+            todo: Some(todo.clone()),
+            proposed_entry: WorkHistoryEntry {
+                occurred_at: local_minute(),
+                title: todo.title,
+                category: todo.category,
+                area: todo.area,
+                summary: input.summary.trim().to_string(),
+                limitations: input.limitations.trim().to_string(),
+            },
         };
-        history.entries.push(history_entry.clone());
+        let mut next = proposals.clone();
+        next.proposals.push(proposal.clone());
+        self.persist_proposals(&next)?;
+        *proposals = next;
+        Ok(proposal)
+    }
 
-        let todo_bytes = render_todo_document(&todos).into_bytes();
+    pub fn approve_completion(
+        &self,
+        project_id: Uuid,
+        root: &Path,
+        proposal_id: Uuid,
+    ) -> Result<CompleteTodoResult, ProjectStateError> {
+        let _guard = self
+            .write_lock
+            .lock()
+            .map_err(|_| ProjectStateError::Validation("The state writer is unavailable".into()))?;
+        let mut proposals = self.proposals.lock().map_err(|_| {
+            ProjectStateError::ProposalStorage("The proposal store is unavailable".into())
+        })?;
+        let Some(proposal_index) = proposals
+            .proposals
+            .iter()
+            .position(|proposal| proposal.id == proposal_id && proposal.project_id == project_id)
+        else {
+            return Err(ProjectStateError::Validation(format!(
+                "Pending review proposal {proposal_id} does not exist for this project"
+            )));
+        };
+        let proposal = proposals.proposals[proposal_index].clone();
+
+        let root = canonical_root(root)?;
+        let history_path = writable_document_path(&root, HISTORY_FILE, HISTORY_ALIASES)?;
+        let history_original = read_optional(&history_path)?;
+        let mut history = parse_work_history_document(history_original.as_deref().unwrap_or(""));
+        ensure_mutable_history_document(&history)?;
+        history.entries.push(proposal.proposed_entry.clone());
         let history_bytes = render_work_history_document(&history).into_bytes();
-        replace_pair_with_rollback(
-            (&todo_path, &todo_bytes, todo_original.as_deref()),
-            (&history_path, &history_bytes, history_original.as_deref()),
-        )?;
+
+        let (completed_todo, todo_rollback) = match proposal.kind {
+            ProposalKind::TodoCompletion => {
+                let proposed_todo = proposal.todo.as_ref().ok_or_else(|| {
+                    ProjectStateError::ProposalStorage(format!(
+                        "TODO completion proposal {} has no TODO snapshot",
+                        proposal.id
+                    ))
+                })?;
+                let todo_path = writable_document_path(&root, TODO_FILE, TODO_ALIASES)?;
+                let todo_original = read_optional(&todo_path)?;
+                let mut todos = parse_todo_document(todo_original.as_deref().unwrap_or(""));
+                ensure_mutable_todo_document(&todos)?;
+                let Some(index) = todos
+                    .items
+                    .iter()
+                    .position(|item| item.id == proposed_todo.id)
+                else {
+                    return Err(ProjectStateError::Validation(format!(
+                        "TODO {} no longer exists; reject the stale proposal",
+                        proposed_todo.id
+                    )));
+                };
+                if todos.items[index] != *proposed_todo {
+                    return Err(ProjectStateError::Validation(format!(
+                        "TODO {} changed after this proposal was submitted; reject it and request completion again",
+                        proposed_todo.id
+                    )));
+                }
+
+                let completed = todos.items.remove(index);
+                for item in &mut todos.items {
+                    item.dependencies
+                        .retain(|dependency| dependency != &completed.id);
+                }
+                todos.warnings = validate_todos(&todos.items);
+                ensure_mutable_todo_document(&todos)?;
+                let todo_bytes = render_todo_document(&todos).into_bytes();
+                replace_pair_with_rollback(
+                    (&todo_path, &todo_bytes, todo_original.as_deref()),
+                    (&history_path, &history_bytes, history_original.as_deref()),
+                )?;
+                (Some(completed), Some((todo_path, todo_original)))
+            }
+            ProposalKind::WorkHistory => {
+                if proposal.todo.is_some() {
+                    return Err(ProjectStateError::ProposalStorage(format!(
+                        "Working-history proposal {} unexpectedly contains a TODO snapshot",
+                        proposal.id
+                    )));
+                }
+                atomic_replace(&history_path, &history_bytes)?;
+                (None, None)
+            }
+        };
+
+        let mut next = proposals.clone();
+        next.proposals.remove(proposal_index);
+        if let Err(error) = self.persist_proposals(&next) {
+            if let Some((todo_path, todo_original)) = &todo_rollback {
+                restore_pair(
+                    (todo_path, todo_original.as_deref()),
+                    (&history_path, history_original.as_deref()),
+                )?;
+            } else {
+                restore_file(&history_path, history_original.as_deref())?;
+            }
+            return Err(error);
+        }
+        *proposals = next;
 
         Ok(CompleteTodoResult {
-            completed_todo: completed,
-            history_entry,
+            completed_todo,
+            history_entry: proposal.proposed_entry,
         })
+    }
+
+    pub fn reject_completion(
+        &self,
+        project_id: Uuid,
+        proposal_id: Uuid,
+    ) -> Result<CompletionProposal, ProjectStateError> {
+        let _guard = self
+            .write_lock
+            .lock()
+            .map_err(|_| ProjectStateError::Validation("The state writer is unavailable".into()))?;
+        let mut proposals = self.proposals.lock().map_err(|_| {
+            ProjectStateError::ProposalStorage("The proposal store is unavailable".into())
+        })?;
+        let Some(index) = proposals
+            .proposals
+            .iter()
+            .position(|proposal| proposal.id == proposal_id && proposal.project_id == project_id)
+        else {
+            return Err(ProjectStateError::Validation(format!(
+                "Pending review proposal {proposal_id} does not exist for this project"
+            )));
+        };
+        let mut next = proposals.clone();
+        let rejected = next.proposals.remove(index);
+        self.persist_proposals(&next)?;
+        *proposals = next;
+        Ok(rejected)
+    }
+
+    fn persist_proposals(
+        &self,
+        proposals: &CompletionProposalData,
+    ) -> Result<(), ProjectStateError> {
+        let Some(path) = &self.proposal_file else {
+            return Ok(());
+        };
+        let bytes = serde_json::to_vec_pretty(proposals)
+            .map_err(|error| ProjectStateError::ProposalStorage(error.to_string()))?;
+        atomic_replace(path, &bytes)?;
+        Ok(())
     }
 }
 
@@ -238,6 +483,7 @@ pub fn inspect_project_state(root: &Path) -> Result<ProjectState, ProjectStateEr
     Ok(ProjectState {
         todos,
         working_history: history,
+        pending_reviews: Vec::new(),
     })
 }
 
@@ -653,31 +899,6 @@ pub fn render_work_history_document(document: &WorkHistoryDocument) -> String {
     output
 }
 
-fn add_work_history_locked(
-    root: &Path,
-    input: AddWorkHistoryInput,
-) -> Result<WorkHistoryEntry, ProjectStateError> {
-    validate_nonempty("title", &input.title)?;
-    validate_nonempty("area", &input.area)?;
-    validate_nonempty("summary", &input.summary)?;
-    validate_nonempty("limitations", &input.limitations)?;
-    let path = writable_document_path(root, HISTORY_FILE, HISTORY_ALIASES)?;
-    let original = read_optional(&path)?;
-    let mut document = parse_work_history_document(original.as_deref().unwrap_or(""));
-    ensure_mutable_history_document(&document)?;
-    let entry = WorkHistoryEntry {
-        occurred_at: local_minute(),
-        title: input.title.trim().to_string(),
-        category: input.category,
-        area: input.area.trim().to_string(),
-        summary: input.summary.trim().to_string(),
-        limitations: input.limitations.trim().to_string(),
-    };
-    document.entries.push(entry.clone());
-    atomic_replace(&path, render_work_history_document(&document).as_bytes())?;
-    Ok(entry)
-}
-
 fn canonical_root(root: &Path) -> Result<PathBuf, ProjectStateError> {
     let root = root
         .canonicalize()
@@ -772,6 +993,24 @@ fn replace_pair_with_rollback(
             None => {}
         }
         return Err(ProjectStateError::Io(error));
+    }
+    Ok(())
+}
+
+fn restore_pair(
+    first: (&Path, Option<&str>),
+    second: (&Path, Option<&str>),
+) -> Result<(), ProjectStateError> {
+    restore_file(first.0, first.1)?;
+    restore_file(second.0, second.1)?;
+    Ok(())
+}
+
+fn restore_file(path: &Path, original: Option<&str>) -> Result<(), ProjectStateError> {
+    match original {
+        Some(original) => atomic_replace(path, original.as_bytes())?,
+        None if path.exists() => fs::remove_file(path)?,
+        None => {}
     }
     Ok(())
 }
@@ -1258,11 +1497,66 @@ mod tests {
     }
 
     #[test]
-    fn completing_todo_updates_both_files_and_satisfies_dependents() {
+    fn completion_proposal_is_persisted_without_changing_project_files() {
         let temp = tempfile::tempdir().unwrap();
-        let service = ProjectStateService::default();
+        let project = temp.path().join("project");
+        fs::create_dir(&project).unwrap();
+        let proposal_file = temp.path().join("app-data/completion-proposals.json");
+        let service = ProjectStateService::load(proposal_file.clone()).unwrap();
+        let project_id = Uuid::new_v4();
+        let todo = render_todo_document(&TodoDocument {
+            relative_path: None,
+            items: vec![sample_todo("TODO-001", TodoPriority::High, &[])],
+            warnings: Vec::new(),
+            preserved_content: None,
+        });
+        fs::write(project.join("TODO.md"), &todo).unwrap();
+        fs::write(project.join("WORK_HISTORY.md"), "").unwrap();
+
+        let proposal = service
+            .complete_todo(
+                project_id,
+                &project,
+                "TODO-001",
+                CompleteTodoInput {
+                    summary: "Implemented it.".into(),
+                    limitations: "none".into(),
+                },
+            )
+            .unwrap();
+
+        assert_eq!(proposal.kind, ProposalKind::TodoCompletion);
+        assert_eq!(proposal.todo.as_ref().unwrap().id, "TODO-001");
+        assert_eq!(proposal.proposed_entry.summary, "Implemented it.");
+        assert_eq!(fs::read_to_string(project.join("TODO.md")).unwrap(), todo);
+        assert_eq!(
+            fs::read_to_string(project.join("WORK_HISTORY.md")).unwrap(),
+            ""
+        );
+        let mut stored: serde_json::Value =
+            serde_json::from_slice(&fs::read(&proposal_file).unwrap()).unwrap();
+        stored["proposals"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("kind");
+        fs::write(&proposal_file, serde_json::to_vec_pretty(&stored).unwrap()).unwrap();
+        let reloaded = ProjectStateService::load(proposal_file).unwrap();
+        assert_eq!(
+            reloaded.pending_reviews(project_id).unwrap(),
+            vec![proposal]
+        );
+    }
+
+    #[test]
+    fn approving_proposal_updates_both_files_and_satisfies_dependents() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().join("project");
+        fs::create_dir(&project).unwrap();
+        let proposal_file = temp.path().join("app-data/proposals.json");
+        let service = ProjectStateService::load(proposal_file.clone()).unwrap();
+        let project_id = Uuid::new_v4();
         fs::write(
-            temp.path().join("TODO.md"),
+            project.join("TODO.md"),
             render_todo_document(&TodoDocument {
                 relative_path: None,
                 items: vec![
@@ -1274,9 +1568,10 @@ mod tests {
             }),
         )
         .unwrap();
-        let result = service
+        let proposal = service
             .complete_todo(
-                temp.path(),
+                project_id,
+                &project,
                 "TODO-001",
                 CompleteTodoInput {
                     summary: "Implemented it.".into(),
@@ -1284,8 +1579,11 @@ mod tests {
                 },
             )
             .unwrap();
-        assert_eq!(result.completed_todo.id, "TODO-001");
-        let state = service.inspect(temp.path()).unwrap();
+        let result = service
+            .approve_completion(project_id, &project, proposal.id)
+            .unwrap();
+        assert_eq!(result.completed_todo.as_ref().unwrap().id, "TODO-001");
+        let state = service.inspect(&project).unwrap();
         assert_eq!(state.todos.items.len(), 1);
         assert!(state.todos.items[0].dependencies.is_empty());
         assert_eq!(state.working_history.entries[0].title, "Task TODO-001");
@@ -1294,37 +1592,236 @@ mod tests {
             WorkCategory::Feature
         );
         assert_eq!(state.working_history.entries[0].area, "state");
+        assert!(service.pending_reviews(project_id).unwrap().is_empty());
+        assert!(
+            ProjectStateService::load(proposal_file)
+                .unwrap()
+                .pending_reviews(project_id)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
-    fn failed_completion_does_not_modify_either_file() {
+    fn rejecting_proposal_leaves_todo_and_history_unchanged() {
         let temp = tempfile::tempdir().unwrap();
-        let service = ProjectStateService::default();
+        let project = temp.path().join("project");
+        fs::create_dir(&project).unwrap();
+        let proposal_file = temp.path().join("app-data/proposals.json");
+        let service = ProjectStateService::load(proposal_file.clone()).unwrap();
+        let project_id = Uuid::new_v4();
         let todo = render_todo_document(&TodoDocument {
             relative_path: None,
-            items: vec![sample_todo("TODO-001", TodoPriority::High, &["TODO-999"])],
+            items: vec![sample_todo("TODO-001", TodoPriority::High, &[])],
             warnings: Vec::new(),
             preserved_content: None,
         });
-        fs::write(temp.path().join("TODO.md"), &todo).unwrap();
-        fs::write(temp.path().join("WORK_HISTORY.md"), "").unwrap();
-        let result = service.complete_todo(
-            temp.path(),
-            "TODO-001",
-            CompleteTodoInput {
-                summary: "No change.".into(),
-                limitations: "none".into(),
-            },
-        );
-        assert!(result.is_err());
+        fs::write(project.join("TODO.md"), &todo).unwrap();
+        fs::write(project.join("WORK_HISTORY.md"), "").unwrap();
+        let proposal = service
+            .complete_todo(
+                project_id,
+                &project,
+                "TODO-001",
+                CompleteTodoInput {
+                    summary: "No change.".into(),
+                    limitations: "none".into(),
+                },
+            )
+            .unwrap();
+
+        service.reject_completion(project_id, proposal.id).unwrap();
+
+        assert_eq!(fs::read_to_string(project.join("TODO.md")).unwrap(), todo);
         assert_eq!(
-            fs::read_to_string(temp.path().join("TODO.md")).unwrap(),
-            todo
-        );
-        assert_eq!(
-            fs::read_to_string(temp.path().join("WORK_HISTORY.md")).unwrap(),
+            fs::read_to_string(project.join("WORK_HISTORY.md")).unwrap(),
             ""
         );
+        assert!(service.pending_reviews(project_id).unwrap().is_empty());
+        assert!(
+            ProjectStateService::load(proposal_file)
+                .unwrap()
+                .pending_reviews(project_id)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn working_history_request_uses_the_existing_proposal_store_and_approval_flow() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().join("project");
+        fs::create_dir(&project).unwrap();
+        fs::write(project.join("WORK_HISTORY.md"), "").unwrap();
+        let proposal_file = temp.path().join("app-data/proposals.json");
+        let project_id = Uuid::new_v4();
+        let service = ProjectStateService::load(proposal_file.clone()).unwrap();
+
+        let proposal = service
+            .add_work_history(
+                project_id,
+                &project,
+                AddWorkHistoryInput {
+                    title: "Standalone work".into(),
+                    category: WorkCategory::Documentation,
+                    area: "project-state".into(),
+                    summary: "Prepared the entry.".into(),
+                    limitations: "none".into(),
+                },
+            )
+            .unwrap();
+
+        assert_eq!(proposal.kind, ProposalKind::WorkHistory);
+        assert!(proposal.todo.is_none());
+        assert_eq!(
+            fs::read_to_string(project.join("WORK_HISTORY.md")).unwrap(),
+            ""
+        );
+        let reloaded = ProjectStateService::load(proposal_file).unwrap();
+        assert_eq!(
+            reloaded.pending_reviews(project_id).unwrap(),
+            vec![proposal.clone()]
+        );
+
+        let result = reloaded
+            .approve_completion(project_id, &project, proposal.id)
+            .unwrap();
+        assert!(result.completed_todo.is_none());
+        assert_eq!(result.history_entry.title, "Standalone work");
+        let state = reloaded.inspect(&project).unwrap();
+        assert_eq!(state.working_history.entries.len(), 1);
+        assert_eq!(
+            state.working_history.entries[0].summary,
+            "Prepared the entry."
+        );
+        assert!(reloaded.pending_reviews(project_id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn rejecting_working_history_proposal_discards_it_without_changing_history() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().join("project");
+        fs::create_dir(&project).unwrap();
+        fs::write(project.join("WORK_HISTORY.md"), "Original history").unwrap();
+        let service = ProjectStateService::default();
+        let project_id = Uuid::new_v4();
+        let proposal = service
+            .add_work_history(
+                project_id,
+                &project,
+                AddWorkHistoryInput {
+                    title: "Discarded work".into(),
+                    category: WorkCategory::Others,
+                    area: "project-state".into(),
+                    summary: "Do not append.".into(),
+                    limitations: "none".into(),
+                },
+            )
+            .unwrap();
+
+        service.reject_completion(project_id, proposal.id).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(project.join("WORK_HISTORY.md")).unwrap(),
+            "Original history"
+        );
+        assert!(service.pending_reviews(project_id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn failed_working_history_approval_restores_history_and_retains_proposal() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().join("project");
+        fs::create_dir(&project).unwrap();
+        let original = "Original history";
+        fs::write(project.join("WORK_HISTORY.md"), original).unwrap();
+        let proposal_file = temp.path().join("app-data/proposals.json");
+        let service = ProjectStateService::load(proposal_file.clone()).unwrap();
+        let project_id = Uuid::new_v4();
+        let proposal = service
+            .add_work_history(
+                project_id,
+                &project,
+                AddWorkHistoryInput {
+                    title: "Rollback work".into(),
+                    category: WorkCategory::Test,
+                    area: "project-state".into(),
+                    summary: "Exercise rollback.".into(),
+                    limitations: "none".into(),
+                },
+            )
+            .unwrap();
+        fs::remove_file(&proposal_file).unwrap();
+        fs::create_dir(&proposal_file).unwrap();
+
+        let result = service.approve_completion(project_id, &project, proposal.id);
+
+        assert!(result.is_err());
+        assert_eq!(
+            fs::read_to_string(project.join("WORK_HISTORY.md")).unwrap(),
+            original
+        );
+        assert_eq!(service.pending_reviews(project_id).unwrap(), vec![proposal]);
+    }
+
+    #[test]
+    fn repeated_submission_is_rejected_until_the_pending_proposal_is_rejected() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().join("project");
+        fs::create_dir(&project).unwrap();
+        let service = ProjectStateService::default();
+        let project_id = Uuid::new_v4();
+        fs::write(
+            project.join("TODO.md"),
+            render_todo_document(&TodoDocument {
+                relative_path: None,
+                items: vec![sample_todo("TODO-001", TodoPriority::High, &[])],
+                warnings: Vec::new(),
+                preserved_content: None,
+            }),
+        )
+        .unwrap();
+        let input = || CompleteTodoInput {
+            summary: "Done.".into(),
+            limitations: "none".into(),
+        };
+
+        let first = service
+            .complete_todo(project_id, &project, "TODO-001", input())
+            .unwrap();
+        let duplicate = service.complete_todo(project_id, &project, "TODO-001", input());
+        assert!(
+            duplicate
+                .unwrap_err()
+                .to_string()
+                .contains("already has a pending completion proposal")
+        );
+        assert_eq!(service.pending_reviews(project_id).unwrap().len(), 1);
+
+        service.reject_completion(project_id, first.id).unwrap();
+        let second = service
+            .complete_todo(project_id, &project, "TODO-001", input())
+            .unwrap();
+        assert_ne!(first.id, second.id);
+    }
+
+    #[test]
+    fn paired_replacement_rolls_back_the_first_file_when_the_second_fails() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = temp.path().join("TODO.md");
+        let invalid_parent = temp.path().join("not-a-directory");
+        let second = invalid_parent.join("WORK_HISTORY.md");
+        fs::write(&first, "original TODO").unwrap();
+        fs::write(&invalid_parent, "blocks directory creation").unwrap();
+
+        let result = replace_pair_with_rollback(
+            (&first, b"updated TODO", Some("original TODO")),
+            (&second, b"new history", None),
+        );
+
+        assert!(result.is_err());
+        assert_eq!(fs::read_to_string(first).unwrap(), "original TODO");
+        assert!(!second.exists());
     }
 
     #[test]

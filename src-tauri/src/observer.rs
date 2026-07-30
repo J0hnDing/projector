@@ -56,6 +56,7 @@ pub fn detail(entry: &RegistryEntry, fetch: &GitFetchSnapshot) -> ProjectDetail 
                     }],
                     preserved_content: None,
                 },
+                pending_reviews: Vec::new(),
             }
         }),
     }

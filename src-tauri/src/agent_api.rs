@@ -15,8 +15,8 @@ use uuid::Uuid;
 
 use crate::{
     models::{
-        AddTodoInput, AddWorkHistoryInput, CompleteTodoInput, CompleteTodoResult, ProjectState,
-        RegistryEntry, TodoItem, WorkHistoryEntry,
+        AddTodoInput, AddWorkHistoryInput, CompleteTodoInput, CompletionProposal, ProjectState,
+        RegistryEntry, TodoItem,
     },
     project_state::{ProjectStateError, ProjectStateService},
     registry::RegistryStore,
@@ -139,11 +139,15 @@ async fn project_state(
     State(context): State<AgentApiContext>,
 ) -> Result<Json<ProjectState>, ApiError> {
     let entry = registered_project(&context, project_id)?;
-    context
+    let mut state = context
         .project_state
         .inspect(&entry.path)
-        .map(Json)
-        .map_err(state_error)
+        .map_err(state_error)?;
+    state.pending_reviews = context
+        .project_state
+        .pending_reviews(project_id)
+        .map_err(state_error)?;
+    Ok(Json(state))
 }
 
 async fn add_todo(
@@ -163,25 +167,25 @@ async fn complete_todo(
     Path((project_id, todo_id)): Path<(Uuid, String)>,
     State(context): State<AgentApiContext>,
     Json(input): Json<CompleteTodoInput>,
-) -> Result<Json<CompleteTodoResult>, ApiError> {
+) -> Result<(StatusCode, Json<CompletionProposal>), ApiError> {
     let entry = registered_project(&context, project_id)?;
-    context
+    let proposal = context
         .project_state
-        .complete_todo(&entry.path, &todo_id, input)
-        .map(Json)
-        .map_err(state_error)
+        .complete_todo(project_id, &entry.path, &todo_id, input)
+        .map_err(state_error)?;
+    Ok((StatusCode::CREATED, Json(proposal)))
 }
 
 async fn add_work_history(
     Path(project_id): Path<Uuid>,
     State(context): State<AgentApiContext>,
     Json(input): Json<AddWorkHistoryInput>,
-) -> Result<(StatusCode, Json<WorkHistoryEntry>), ApiError> {
+) -> Result<(StatusCode, Json<CompletionProposal>), ApiError> {
     let entry = registered_project(&context, project_id)?;
     context
         .project_state
-        .add_work_history(&entry.path, input)
-        .map(|entry| (StatusCode::CREATED, Json(entry)))
+        .add_work_history(project_id, &entry.path, input)
+        .map(|proposal| (StatusCode::CREATED, Json(proposal)))
         .map_err(state_error)
 }
 
@@ -219,6 +223,11 @@ fn state_error(error: ProjectStateError) -> ApiError {
             code: "write_failed",
             message: error.to_string(),
         },
+        ProjectStateError::ProposalStorage(message) => ApiError {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            code: "proposal_storage_failed",
+            message,
+        },
     }
 }
 
@@ -237,14 +246,16 @@ mod tests {
         let temp = tempdir().unwrap();
         let project = temp.path().join("project");
         std::fs::create_dir(&project).unwrap();
+        std::fs::write(project.join("WORK_HISTORY.md"), "").unwrap();
         let mut registry =
             RegistryStore::load(temp.path().join("registered-projects.json")).unwrap();
         let entry = registry.register(&project).unwrap();
+        let proposal_file = temp.path().join("completion-proposals.json");
         (
             temp,
             AgentApiContext {
                 registry: Arc::new(Mutex::new(registry)),
-                project_state: Arc::new(ProjectStateService::default()),
+                project_state: Arc::new(ProjectStateService::load(proposal_file).unwrap()),
             },
             entry.id,
         )
@@ -278,7 +289,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn api_supports_all_three_mutations_through_the_shared_service() {
+    async fn api_routes_completion_and_work_history_calls_to_pending_review() {
         let (_temp, context, project_id) = test_context();
         let app = router(context.clone());
         let (status, todo) = json_request(
@@ -298,7 +309,7 @@ mod tests {
         assert_eq!(status, StatusCode::CREATED);
         assert_eq!(todo["id"], "TODO-001");
 
-        let (status, _) = json_request(
+        let (status, work_history_proposal) = json_request(
             app.clone(),
             &format!("/v1/projects/{project_id}/work-history"),
             json!({
@@ -311,8 +322,36 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(work_history_proposal["kind"], "workHistory");
+        assert!(work_history_proposal["todo"].is_null());
+        assert_eq!(
+            work_history_proposal["proposedEntry"]["title"],
+            "Research recorded"
+        );
 
-        let (status, completed) = json_request(
+        let todo_before = std::fs::read_to_string(
+            context
+                .registry
+                .lock()
+                .unwrap()
+                .find(project_id)
+                .unwrap()
+                .path
+                .join("TODO.md"),
+        )
+        .unwrap();
+        let history_before = std::fs::read_to_string(
+            context
+                .registry
+                .lock()
+                .unwrap()
+                .find(project_id)
+                .unwrap()
+                .path
+                .join("WORK_HISTORY.md"),
+        )
+        .unwrap();
+        let (status, proposal) = json_request(
             app,
             &format!("/v1/projects/{project_id}/todos/TODO-001/complete"),
             json!({
@@ -321,12 +360,38 @@ mod tests {
             }),
         )
         .await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(completed["completedTodo"]["id"], "TODO-001");
-        assert_eq!(completed["historyEntry"]["title"], "Structured state");
-        assert_eq!(completed["historyEntry"]["category"], "feature");
-        assert_eq!(completed["historyEntry"]["area"], "project-state");
-        assert!(completed["historyEntry"].get("relatedTodos").is_none());
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(proposal["kind"], "todoCompletion");
+        assert_eq!(proposal["todo"]["id"], "TODO-001");
+        assert_eq!(proposal["proposedEntry"]["title"], "Structured state");
+        assert_eq!(proposal["proposedEntry"]["category"], "feature");
+        assert_eq!(proposal["proposedEntry"]["area"], "project-state");
+        assert!(proposal["proposedEntry"].get("relatedTodos").is_none());
+
+        let root = context
+            .registry
+            .lock()
+            .unwrap()
+            .find(project_id)
+            .unwrap()
+            .path
+            .clone();
+        assert_eq!(
+            std::fs::read_to_string(root.join("TODO.md")).unwrap(),
+            todo_before
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("WORK_HISTORY.md")).unwrap(),
+            history_before
+        );
+        assert_eq!(
+            context
+                .project_state
+                .pending_reviews(project_id)
+                .unwrap()
+                .len(),
+            2
+        );
     }
 
     #[tokio::test]
@@ -351,7 +416,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn redundant_body_identifiers_and_legacy_routes_are_rejected() {
+    async fn redundant_identifiers_legacy_routes_and_agent_approval_are_rejected() {
         let (_temp, context, project_id) = test_context();
         let app = router(context);
         let body = json!({
@@ -375,7 +440,19 @@ mod tests {
             StatusCode::UNPROCESSABLE_ENTITY
         );
         assert_eq!(
-            request_status(app, "/v1/add_todo", body).await,
+            request_status(app.clone(), "/v1/add_todo", body).await,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            request_status(
+                app,
+                &format!(
+                    "/v1/projects/{project_id}/completion-proposals/{}/approve",
+                    Uuid::new_v4()
+                ),
+                json!({}),
+            )
+            .await,
             StatusCode::NOT_FOUND
         );
     }

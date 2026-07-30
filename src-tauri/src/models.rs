@@ -54,6 +54,7 @@ pub struct ProjectDetail {
 pub struct ProjectState {
     pub todos: TodoDocument,
     pub working_history: WorkHistoryDocument,
+    pub pending_reviews: Vec<CompletionProposal>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -160,6 +161,26 @@ pub struct CompleteTodoInput {
     pub limitations: String,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CompletionProposal {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    pub requested_at: DateTime<Utc>,
+    #[serde(default)]
+    pub kind: ProposalKind,
+    pub todo: Option<TodoItem>,
+    pub proposed_entry: WorkHistoryEntry,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ProposalKind {
+    #[default]
+    TodoCompletion,
+    WorkHistory,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct AddWorkHistoryInput {
@@ -173,7 +194,7 @@ pub struct AddWorkHistoryInput {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CompleteTodoResult {
-    pub completed_todo: TodoItem,
+    pub completed_todo: Option<TodoItem>,
     pub history_entry: WorkHistoryEntry,
 }
 

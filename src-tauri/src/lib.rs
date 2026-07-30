@@ -15,8 +15,8 @@ use std::{
 
 use git_sync::GitSyncManager;
 use models::{
-    AddTodoInput, AddWorkHistoryInput, CompleteTodoInput, CompleteTodoResult, ProjectDetail,
-    ProjectSummary, TodoItem, WorkHistoryEntry,
+    AddTodoInput, AddWorkHistoryInput, CompleteTodoInput, CompleteTodoResult, CompletionProposal,
+    ProjectDetail, ProjectSummary, TodoItem,
 };
 use project_state::ProjectStateService;
 use registry::RegistryStore;
@@ -160,9 +160,10 @@ async fn open_project(id: Uuid, state: State<'_, AppState>) -> Result<ProjectDet
         .map_err(|error| error.to_string())?;
 
     let snapshot = state.git_sync.snapshot(entry.id);
-    tauri::async_runtime::spawn_blocking(move || observer::detail(&entry, &snapshot))
+    let service = Arc::clone(&state.project_state);
+    tauri::async_runtime::spawn_blocking(move || detail_with_pending(&entry, &snapshot, &service))
         .await
-        .map_err(|error| format!("Unable to inspect project: {error}"))
+        .map_err(|error| format!("Unable to inspect project: {error}"))?
 }
 
 #[tauri::command]
@@ -176,9 +177,10 @@ async fn refresh_project(id: Uuid, state: State<'_, AppState>) -> Result<Project
         .ok_or_else(|| format!("Unknown project id {id}"))?;
 
     let snapshot = state.git_sync.snapshot(entry.id);
-    tauri::async_runtime::spawn_blocking(move || observer::detail(&entry, &snapshot))
+    let service = Arc::clone(&state.project_state);
+    tauri::async_runtime::spawn_blocking(move || detail_with_pending(&entry, &snapshot, &service))
         .await
-        .map_err(|error| format!("Unable to inspect project: {error}"))
+        .map_err(|error| format!("Unable to inspect project: {error}"))?
 }
 
 #[tauri::command]
@@ -208,10 +210,11 @@ async fn pull_project(id: Uuid, state: State<'_, AppState>) -> Result<ProjectDet
         .cloned()
         .ok_or_else(|| format!("Unknown project id {id}"))?;
     let git_sync = state.git_sync.clone();
+    let service = Arc::clone(&state.project_state);
 
     tauri::async_runtime::spawn_blocking(move || {
         git_sync.pull(&entry)?;
-        Ok(observer::detail(&entry, &git_sync.snapshot(entry.id)))
+        detail_with_pending(&entry, &git_sync.snapshot(entry.id), &service)
     })
     .await
     .map_err(|error| format!("Unable to pull project: {error}"))?
@@ -237,12 +240,51 @@ async fn complete_todo(
     todo_id: String,
     input: CompleteTodoInput,
     state: State<'_, AppState>,
+) -> Result<CompletionProposal, String> {
+    let root = registered_root(id, &state)?;
+    let service = Arc::clone(&state.project_state);
+    tauri::async_runtime::spawn_blocking(move || service.complete_todo(id, &root, &todo_id, input))
+        .await
+        .map_err(|error| format!("Unable to request TODO completion: {error}"))?
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_pending_reviews(
+    id: Uuid,
+    state: State<'_, AppState>,
+) -> Result<Vec<CompletionProposal>, String> {
+    registered_root(id, &state)?;
+    state
+        .project_state
+        .pending_reviews(id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn approve_completion(
+    id: Uuid,
+    proposal_id: Uuid,
+    state: State<'_, AppState>,
 ) -> Result<CompleteTodoResult, String> {
     let root = registered_root(id, &state)?;
     let service = Arc::clone(&state.project_state);
-    tauri::async_runtime::spawn_blocking(move || service.complete_todo(&root, &todo_id, input))
+    tauri::async_runtime::spawn_blocking(move || service.approve_completion(id, &root, proposal_id))
         .await
-        .map_err(|error| format!("Unable to complete TODO: {error}"))?
+        .map_err(|error| format!("Unable to approve completion: {error}"))?
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn reject_completion(
+    id: Uuid,
+    proposal_id: Uuid,
+    state: State<'_, AppState>,
+) -> Result<CompletionProposal, String> {
+    let service = Arc::clone(&state.project_state);
+    tauri::async_runtime::spawn_blocking(move || service.reject_completion(id, proposal_id))
+        .await
+        .map_err(|error| format!("Unable to reject completion: {error}"))?
         .map_err(|error| error.to_string())
 }
 
@@ -251,12 +293,12 @@ async fn add_work_history(
     id: Uuid,
     input: AddWorkHistoryInput,
     state: State<'_, AppState>,
-) -> Result<WorkHistoryEntry, String> {
+) -> Result<CompletionProposal, String> {
     let root = registered_root(id, &state)?;
     let service = Arc::clone(&state.project_state);
-    tauri::async_runtime::spawn_blocking(move || service.add_work_history(&root, input))
+    tauri::async_runtime::spawn_blocking(move || service.add_work_history(id, &root, input))
         .await
-        .map_err(|error| format!("Unable to add working history: {error}"))?
+        .map_err(|error| format!("Unable to request working-history review: {error}"))?
         .map_err(|error| error.to_string())
 }
 
@@ -270,12 +312,25 @@ fn registered_root(id: Uuid, state: &State<'_, AppState>) -> Result<PathBuf, Str
         .ok_or_else(|| format!("Unknown project id {id}"))
 }
 
+fn detail_with_pending(
+    entry: &models::RegistryEntry,
+    snapshot: &git_sync::GitFetchSnapshot,
+    service: &ProjectStateService,
+) -> Result<ProjectDetail, String> {
+    let mut detail = observer::detail(entry, snapshot);
+    detail.state.pending_reviews = service
+        .pending_reviews(entry.id)
+        .map_err(|error| error.to_string())?;
+    Ok(detail)
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let registry_path = app.path().app_data_dir()?.join("registered-projects.json");
             let sync_cache_path = app.path().app_data_dir()?.join("git-sync-cache.json");
+            let proposal_path = app.path().app_data_dir()?.join("completion-proposals.json");
             let registry = RegistryStore::load(registry_path)
                 .map_err(|error| Box::<dyn std::error::Error>::from(error.to_string()))?;
             let mut watcher = ProjectWatcher::new(app.handle().clone())?;
@@ -287,7 +342,10 @@ pub fn run() {
             let startup_entries = registry.entries().to_vec();
             let git_sync = GitSyncManager::load(sync_cache_path);
             let registry = Arc::new(Mutex::new(registry));
-            let project_state = Arc::new(ProjectStateService::default());
+            let project_state = Arc::new(
+                ProjectStateService::load(proposal_path)
+                    .map_err(|error| Box::<dyn std::error::Error>::from(error.to_string()))?,
+            );
             agent_api::start(agent_api::AgentApiContext {
                 registry: Arc::clone(&registry),
                 project_state: Arc::clone(&project_state),
@@ -315,6 +373,9 @@ pub fn run() {
             pull_project,
             add_todo,
             complete_todo,
+            list_pending_reviews,
+            approve_completion,
+            reject_completion,
             add_work_history
         ])
         .run(tauri::generate_context!())

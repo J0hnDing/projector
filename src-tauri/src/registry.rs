@@ -280,7 +280,10 @@ mod tests {
         let instructions = fs::read_to_string(entry.path.join("AGENTS.md")).unwrap();
         assert!(instructions.contains("POST /projects/{projectId}/todos"));
         assert!(instructions.contains("category"));
-        assert!(instructions.contains("do not follow it with a `work-history` call"));
+        assert!(instructions.contains(
+            "Use `POST /projects/{projectId}/todos/{todoId}/complete` when that TODO is finished."
+        ));
+        assert!(!instructions.contains("TODO status is derived"));
     }
 
     #[test]

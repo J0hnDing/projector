@@ -2,7 +2,11 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 
-import type { ProjectDetail, ProjectSummary } from "./types";
+import type {
+  CompletionProposal,
+  ProjectDetail,
+  ProjectSummary,
+} from "./types";
 
 export function listProjects(): Promise<ProjectSummary[]> {
   return invoke("list_projects");
@@ -34,6 +38,18 @@ export function refreshProjects(): Promise<ProjectSummary[]> {
 
 export function pullProject(id: string): Promise<ProjectDetail> {
   return invoke("pull_project", { id });
+}
+
+export function approveCompletion(id: string, proposalId: string): Promise<void> {
+  return invoke("approve_completion", { id, proposalId });
+}
+
+export function rejectCompletion(id: string, proposalId: string): Promise<CompletionProposal> {
+  return invoke("reject_completion", { id, proposalId });
+}
+
+export function listPendingReviews(id: string): Promise<CompletionProposal[]> {
+  return invoke("list_pending_reviews", { id });
 }
 
 export async function chooseProjectDirectory(): Promise<string | null> {

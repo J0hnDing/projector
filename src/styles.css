@@ -65,6 +65,7 @@ button:focus-visible { outline: 3px solid rgba(44, 106, 79, .28); outline-offset
 .tabs button { position: relative; padding: 11px 13px 13px; color: #70756f; background: transparent; border: 0; cursor: pointer; font-size: 13px; font-weight: 620; }
 .tabs button.active { color: #1f5139; }
 .tabs button.active::after { position: absolute; right: 10px; bottom: -1px; left: 10px; height: 2px; content: ""; background: #2b704f; border-radius: 2px 2px 0 0; }
+.tab-count { display: inline-grid; min-width: 18px; height: 18px; margin-left: 6px; padding: 0 5px; place-items: center; color: #fff; background: #9a5a22; border-radius: 999px; font-size: 10px; }
 .tab-content { flex: 1; min-height: 0; padding: 28px 40px 48px; overflow-y: auto; }
 .overview-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; max-width: 1050px; }
 .panel { padding: 22px; background: #fff; border: 1px solid #e2dfd8; border-radius: 13px; box-shadow: 0 2px 12px rgba(41,44,40,.025); }
@@ -149,6 +150,17 @@ button:focus-visible { outline: 3px solid rgba(44, 106, 79, .28); outline-offset
 .history-controls label { display: flex; flex-direction: column; gap: 5px; color: #787e79; font-size: 10px; font-weight: 700; text-transform: uppercase; }
 .history-controls select, .history-controls input { min-width: 0; padding: 7px 8px; color: #303833; background: #fbfbf8; border: 1px solid #d9d7d0; border-radius: 6px; font: inherit; font-size: 11px; text-transform: none; }
 .history-list { display: flex; flex-direction: column; gap: 8px; }
+.pending-review-list { display: flex; flex-direction: column; gap: 12px; }
+.pending-review-panel > .notice { margin-bottom: 0; }
+.pending-review-card { padding: 20px 22px; }
+.pending-review-card > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
+.pending-review-card h3 { margin: 0 0 9px; color: #223029; font-family: Georgia, serif; font-size: 19px; font-weight: 600; }
+.pending-review-card header time { flex: 0 0 auto; color: #7d837e; font-size: 10px; }
+.pending-review-card > section { margin-top: 16px; padding-top: 15px; border-top: 1px solid #eceae4; }
+.pending-review-card .section-label { margin-bottom: 7px; }
+.review-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 18px; padding-top: 16px; border-top: 1px solid #eceae4; }
+.danger-button { color: #923c36; }
+.pending-review-card button:disabled { cursor: wait; opacity: .6; }
 .history-summary { gap: 8px 14px; padding: 12px 14px; color: #243029; }
 .history-title { font-family: Georgia, serif; font-size: 15px; font-weight: 600; }
 .history-summary:hover, .todo-summary:hover { background: #faf9f5; }

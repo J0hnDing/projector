@@ -2,9 +2,14 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import App, { DocumentPanel, HistoryPanel, TodoPanel } from "./App";
+import App, {
+  DocumentPanel,
+  HistoryPanel,
+  PendingReviewPanel,
+  TodoPanel,
+} from "./App";
 import * as api from "./api";
-import type { ProjectDetail } from "./types";
+import type { CompletionProposal, ProjectDetail } from "./types";
 
 vi.mock("./api", () => ({
   listProjects: vi.fn(),
@@ -15,6 +20,9 @@ vi.mock("./api", () => ({
   refreshProject: vi.fn(),
   refreshProjects: vi.fn(),
   pullProject: vi.fn(),
+  approveCompletion: vi.fn(),
+  rejectCompletion: vi.fn(),
+  listPendingReviews: vi.fn().mockResolvedValue([]),
   chooseProjectDirectory: vi.fn(),
   chooseProjectParentDirectory: vi.fn(),
   onProjectChanged: vi.fn().mockResolvedValue(() => undefined),
@@ -65,6 +73,48 @@ const detail: ProjectDetail = {
       warnings: [],
       preservedContent: null,
     },
+    pendingReviews: [],
+  },
+};
+
+const completionProposal: CompletionProposal = {
+  id: "572031f1-d3f4-43a2-89dd-2e48d2fb4376",
+  projectId: detail.project.id,
+  requestedAt: "2026-07-29T14:15:00Z",
+  kind: "todoCompletion",
+  todo: {
+    id: "TODO-001",
+    title: "Review completion",
+    priority: "high",
+    category: "feature",
+    area: "project-state",
+    dependencies: [],
+    rationale: "Users own completion.",
+    acceptanceCriteria: "Approval is required.",
+  },
+  proposedEntry: {
+    occurredAt: "2026-07-29T10:15:00",
+    title: "Review completion",
+    category: "feature",
+    area: "project-state",
+    summary: "Added the review workflow.",
+    limitations: "none",
+  },
+};
+
+const workHistoryProposal: CompletionProposal = {
+  id: "9cc169ab-ac65-4b2b-83a7-d91140ea45a2",
+  projectId: detail.project.id,
+  requestedAt: "2026-07-30T14:15:00Z",
+  kind: "workHistory",
+  todo: null,
+  proposedEntry: {
+    occurredAt: "2026-07-30T10:15:00",
+    title: "Documented standalone work",
+    category: "documentation",
+    area: "project-state",
+    summary: "Prepared a standalone history entry for review.",
+    limitations: "none",
   },
 };
 
@@ -75,9 +125,13 @@ describe("App", () => {
     vi.mocked(api.refreshProject).mockReset();
     vi.mocked(api.refreshProjects).mockReset();
     vi.mocked(api.pullProject).mockReset();
+    vi.mocked(api.approveCompletion).mockReset();
+    vi.mocked(api.rejectCompletion).mockReset();
+    vi.mocked(api.listPendingReviews).mockReset();
     vi.mocked(api.createProject).mockReset();
     vi.mocked(api.listProjects).mockResolvedValue([]);
     vi.mocked(api.refreshProjects).mockResolvedValue([]);
+    vi.mocked(api.listPendingReviews).mockResolvedValue([]);
   });
 
   it("shows a clear first-run state", async () => {
@@ -174,6 +228,31 @@ describe("App", () => {
     expect(pull).toBeDisabled();
     expect(pull).toHaveAttribute("title", "Pull requires a clean working tree");
   });
+
+  it("approves a pending proposal through the local desktop command", async () => {
+    const pendingDetail = {
+      ...detail,
+      state: { ...detail.state, pendingReviews: [completionProposal] },
+    };
+    vi.mocked(api.listProjects).mockResolvedValue([detail.project]);
+    vi.mocked(api.openProject).mockResolvedValue(pendingDetail);
+    vi.mocked(api.listPendingReviews).mockResolvedValue([completionProposal]);
+    vi.mocked(api.approveCompletion).mockResolvedValue();
+    vi.mocked(api.refreshProject).mockResolvedValue(detail);
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "Example" });
+    await userEvent.click(screen.getByRole("tab", { name: /Pending Review/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Approve" }));
+
+    await waitFor(() => {
+      expect(api.approveCompletion).toHaveBeenCalledWith(
+        detail.project.id,
+        completionProposal.id,
+      );
+    });
+    expect(api.refreshProject).toHaveBeenCalledWith(detail.project.id);
+  });
 });
 
 describe("DocumentPanel", () => {
@@ -201,6 +280,35 @@ describe("DocumentPanel", () => {
 });
 
 describe("structured project state", () => {
+  it("shows both proposal kinds and exposes local approve and reject actions", async () => {
+    const onApprove = vi.fn();
+    const onReject = vi.fn();
+    render(
+      <PendingReviewPanel
+        proposals={[completionProposal, workHistoryProposal]}
+        reviewingProposal={null}
+        onApprove={onApprove}
+        onReject={onReject}
+      />,
+    );
+
+    expect(screen.getByRole("heading", { name: "Review completion" })).toBeInTheDocument();
+    expect(screen.getByText("Added the review workflow.")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Documented standalone work" })).toBeInTheDocument();
+    expect(screen.getByText("Prepared a standalone history entry for review.")).toBeInTheDocument();
+    expect(screen.getByText("Working history")).toBeInTheDocument();
+
+    const approveButtons = screen.getAllByRole("button", { name: "Approve" });
+    await userEvent.click(approveButtons[0]);
+    expect(onApprove).toHaveBeenCalledWith("572031f1-d3f4-43a2-89dd-2e48d2fb4376");
+    await userEvent.click(approveButtons[1]);
+    expect(onApprove).toHaveBeenCalledWith("9cc169ab-ac65-4b2b-83a7-d91140ea45a2");
+
+    const rejectButtons = screen.getAllByRole("button", { name: "Reject" });
+    await userEvent.click(rejectButtons[1]);
+    expect(onReject).toHaveBeenCalledWith("9cc169ab-ac65-4b2b-83a7-d91140ea45a2");
+  });
+
   it("shows four compact priority boxes and opens TODO details in a closable window", async () => {
     render(
       <TodoPanel

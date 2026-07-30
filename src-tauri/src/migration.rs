@@ -730,7 +730,10 @@ mod tests {
         let updated = replace_section(content, "Projector", PROJECTOR_SECTION);
         assert!(updated.contains("## Existing\n\nKeep."));
         assert!(updated.contains("POST /projects/{projectId}/todos/{todoId}/complete"));
-        assert!(updated.contains("do not follow it with a `work-history` call"));
+        assert!(updated.contains(
+            "Use `POST /projects/{projectId}/todos/{todoId}/complete` when that TODO is finished."
+        ));
+        assert!(!updated.contains("TODO status is derived"));
         assert!(updated.contains("## Later\n\nAlso keep."));
         assert!(!updated.contains("\nOld.\n"));
     }

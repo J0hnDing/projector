@@ -98,6 +98,15 @@ export interface WorkHistoryEntry {
   limitations: string;
 }
 
+export interface CompletionProposal {
+  id: string;
+  projectId: string;
+  requestedAt: string;
+  kind: "todoCompletion" | "workHistory";
+  todo: TodoItem | null;
+  proposedEntry: WorkHistoryEntry;
+}
+
 export interface WorkHistoryDocument {
   relativePath: string | null;
   entries: WorkHistoryEntry[];
@@ -110,5 +119,6 @@ export interface WorkHistoryDocument {
 export interface ProjectState {
   todos: TodoDocument;
   workingHistory: WorkHistoryDocument;
+  pendingReviews: CompletionProposal[];
 }
 
