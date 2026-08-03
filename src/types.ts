@@ -122,3 +122,28 @@ export interface ProjectState {
   pendingReviews: CompletionProposal[];
 }
 
+export type ReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
+
+export interface WorkerAgentSettings {
+  fileName: string;
+  name: string;
+  description: string;
+  model: string;
+  modelReasoningEffort: ReasoningEffort;
+  sandboxMode: string;
+  developerInstructions: string;
+}
+
+export interface SubagentSettings {
+  version: number;
+  subagentsSection: string;
+  workerLow: WorkerAgentSettings;
+  workerMedium: WorkerAgentSettings;
+  workerHigh: WorkerAgentSettings;
+}
+
+export interface GeneratedSubagentFile {
+  path: string;
+  content: string;
+}
+

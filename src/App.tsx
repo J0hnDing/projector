@@ -8,10 +8,13 @@ import remarkGfm from "remark-gfm";
 import * as api from "./api";
 import type {
   CompletionProposal,
+  GeneratedSubagentFile,
   GitInfo,
   ProjectDetail,
   ProjectDocument,
   ProjectSummary,
+  ReasoningEffort,
+  SubagentSettings,
   TodoDocument,
   TodoPriority,
   ValidationWarning,
@@ -30,6 +33,16 @@ const tabs: Array<{ id: Tab; label: string }> = [
   { id: "history", label: "Working history" },
   { id: "git", label: "Git activity" },
 ];
+
+type WorkerKey = "workerLow" | "workerMedium" | "workerHigh";
+
+const workerDefinitions: Array<{ key: WorkerKey; label: string }> = [
+  { key: "workerLow", label: "Worker low" },
+  { key: "workerMedium", label: "Worker medium" },
+  { key: "workerHigh", label: "Worker high" },
+];
+
+const reasoningEfforts: ReasoningEffort[] = ["low", "medium", "high", "xhigh", "max", "ultra"];
 
 const workCategories: WorkCategory[] = [
   "feature",
@@ -62,6 +75,13 @@ export default function App() {
   const [creatingProject, setCreatingProject] = useState(false);
   const [newProjectName, setNewProjectName] = useState("");
   const [newProjectParent, setNewProjectParent] = useState("");
+  const [initializeGit, setInitializeGit] = useState(true);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsLoading, setSettingsLoading] = useState(false);
+  const [settingsSaving, setSettingsSaving] = useState(false);
+  const [subagentSettings, setSubagentSettings] = useState<SubagentSettings | null>(null);
+  const [settingsPreview, setSettingsPreview] = useState<GeneratedSubagentFile[] | null>(null);
+  const [settingsMessage, setSettingsMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const selectedIdRef = useRef<string | null>(null);
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -235,6 +255,7 @@ export default function App() {
     setError(null);
     setNewProjectName("");
     setNewProjectParent("");
+    setInitializeGit(true);
     setCreateDialogOpen(true);
   };
 
@@ -253,8 +274,13 @@ export default function App() {
     setError(null);
     setCreatingProject(true);
     try {
-      const project = await api.createProject(newProjectParent, newProjectName.trim());
+      const project = await api.createProject(
+        newProjectParent,
+        newProjectName.trim(),
+        initializeGit,
+      );
       setCreateDialogOpen(false);
+      setSettingsOpen(false);
       await loadProjects();
       await openProject(project.id);
     } catch (reason) {
@@ -310,6 +336,64 @@ export default function App() {
     }
   };
 
+  const openSettings = async () => {
+    setSettingsOpen(true);
+    setSettingsLoading(true);
+    setSettingsMessage(null);
+    setSettingsPreview(null);
+    setError(null);
+    try {
+      setSubagentSettings(await api.getSubagentSettings());
+    } catch (reason) {
+      setSubagentSettings(null);
+      setError(messageFrom(reason));
+    } finally {
+      setSettingsLoading(false);
+    }
+  };
+
+  const saveSettings = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!subagentSettings) return;
+    setSettingsSaving(true);
+    setSettingsMessage(null);
+    setError(null);
+    try {
+      setSubagentSettings(await api.saveSubagentSettings(subagentSettings));
+      setSettingsMessage("New-project subagent defaults saved.");
+    } catch (reason) {
+      setError(messageFrom(reason));
+    } finally {
+      setSettingsSaving(false);
+    }
+  };
+
+  const resetSettings = async () => {
+    setSettingsSaving(true);
+    setSettingsMessage(null);
+    setError(null);
+    try {
+      setSubagentSettings(await api.resetSubagentSettings());
+      setSettingsPreview(null);
+      setSettingsMessage("Bundled subagent defaults restored.");
+    } catch (reason) {
+      setError(messageFrom(reason));
+    } finally {
+      setSettingsSaving(false);
+    }
+  };
+
+  const previewSettings = async () => {
+    if (!subagentSettings) return;
+    setSettingsMessage(null);
+    setError(null);
+    try {
+      setSettingsPreview(await api.previewSubagentFiles(subagentSettings));
+    } catch (reason) {
+      setError(messageFrom(reason));
+    }
+  };
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -340,8 +424,11 @@ export default function App() {
             <ProjectListItem
               key={project.id}
               project={project}
-              selected={project.id === selectedId}
-              onSelect={() => void openProject(project.id)}
+              selected={!settingsOpen && project.id === selectedId}
+              onSelect={() => {
+                setSettingsOpen(false);
+                void openProject(project.id);
+              }}
             />
           ))}
         </nav>
@@ -350,6 +437,12 @@ export default function App() {
             Create a project or register an existing local folder to get started.
           </div>
         )}
+        <button
+          className={`settings-button${settingsOpen ? " selected" : ""}`}
+          onClick={() => void openSettings()}
+        >
+          Settings
+        </button>
       </aside>
 
       <main className="workspace">
@@ -359,7 +452,23 @@ export default function App() {
             <button onClick={() => setError(null)} aria-label="Dismiss error">×</button>
           </div>
         )}
-        {loading ? (
+        {settingsOpen ? (
+          <SubagentSettingsPage
+            loading={settingsLoading}
+            message={settingsMessage}
+            onChange={(settings) => {
+              setSubagentSettings(settings);
+              setSettingsMessage(null);
+              setSettingsPreview(null);
+            }}
+            onPreview={() => void previewSettings()}
+            onReset={() => void resetSettings()}
+            onSave={(event) => void saveSettings(event)}
+            preview={settingsPreview}
+            saving={settingsSaving}
+            settings={subagentSettings}
+          />
+        ) : loading ? (
           <CenteredMessage title="Loading projects…" />
         ) : detail ? (
           <ProjectView
@@ -428,8 +537,16 @@ export default function App() {
                 </button>
               </div>
             </label>
+            <label className="create-project-option">
+              <input
+                checked={initializeGit}
+                onChange={(event) => setInitializeGit(event.target.checked)}
+                type="checkbox"
+              />
+              Initialize a Git repository
+            </label>
             <p className="create-project-note">
-              Projector creates the folder, AGENTS.md, TODO.md, and WORK_HISTORY.md, then registers it.
+              Projector creates README.md, AGENTS.md, TODO.md, WORK_HISTORY.md, and the configured .codex/agents workers, then registers the folder. It does not create a commit or remote.
             </p>
             <button
               aria-label="Confirm project creation"
@@ -705,6 +822,155 @@ function syncStatusLabel(git: GitInfo): string {
     default:
       return "Upstream unknown";
   }
+}
+
+function SubagentSettingsPage({
+  loading,
+  message,
+  onChange,
+  onPreview,
+  onReset,
+  onSave,
+  preview,
+  saving,
+  settings,
+}: {
+  loading: boolean;
+  message: string | null;
+  onChange: (settings: SubagentSettings) => void;
+  onPreview: () => void;
+  onReset: () => void;
+  onSave: (event: FormEvent<HTMLFormElement>) => void;
+  preview: GeneratedSubagentFile[] | null;
+  saving: boolean;
+  settings: SubagentSettings | null;
+}) {
+  if (loading) return <CenteredMessage title="Loading settings…" />;
+  if (!settings) {
+    return <CenteredMessage title="Subagent settings are unavailable" body="Review the error above and try again." />;
+  }
+
+  const updateWorker = <K extends keyof SubagentSettings[WorkerKey]>(
+    workerKey: WorkerKey,
+    field: K,
+    value: SubagentSettings[WorkerKey][K],
+  ) => {
+    onChange({
+      ...settings,
+      [workerKey]: { ...settings[workerKey], [field]: value },
+    });
+  };
+
+  return (
+    <div className="settings-page">
+      <header className="settings-header">
+        <div>
+          <p className="eyebrow">Project creation</p>
+          <h2>Subagent defaults</h2>
+          <p>These settings are copied into newly created projects only. Existing projects are never updated.</p>
+        </div>
+      </header>
+      <form className="settings-form" onSubmit={onSave}>
+        {message && <div className="notice success" role="status">{message}</div>}
+        <section className="panel settings-section">
+          <label htmlFor="subagents-section">AGENTS.md Subagents section</label>
+          <p>Edit the complete Markdown section. It must begin with <code>## Subagents</code>.</p>
+          <textarea
+            id="subagents-section"
+            maxLength={32_000}
+            onChange={(event) => onChange({ ...settings, subagentsSection: event.target.value })}
+            required
+            rows={18}
+            value={settings.subagentsSection}
+          />
+        </section>
+
+        <div className="worker-settings-grid">
+          {workerDefinitions.map(({ key, label }) => {
+            const worker = settings[key];
+            return (
+              <section className="panel worker-settings-card" key={key}>
+                <header>
+                  <div>
+                    <p className="section-label">{worker.name}</p>
+                    <h3>{label}</h3>
+                  </div>
+                  <code>.codex/agents/{worker.fileName}</code>
+                </header>
+                <label>
+                  Model
+                  <input
+                    aria-label={`${label} model`}
+                    maxLength={200}
+                    onChange={(event) => updateWorker(key, "model", event.target.value)}
+                    required
+                    value={worker.model}
+                  />
+                </label>
+                <label>
+                  Reasoning effort
+                  <select
+                    aria-label={`${label} reasoning effort`}
+                    onChange={(event) => updateWorker(key, "modelReasoningEffort", event.target.value as ReasoningEffort)}
+                    value={worker.modelReasoningEffort}
+                  >
+                    {reasoningEfforts.map((effort) => <option key={effort} value={effort}>{effort}</option>)}
+                  </select>
+                </label>
+                <label>
+                  Description
+                  <textarea
+                    aria-label={`${label} description`}
+                    maxLength={2_000}
+                    onChange={(event) => updateWorker(key, "description", event.target.value)}
+                    required
+                    rows={3}
+                    value={worker.description}
+                  />
+                </label>
+                <label>
+                  Developer instructions
+                  <textarea
+                    aria-label={`${label} developer instructions`}
+                    maxLength={32_000}
+                    onChange={(event) => updateWorker(key, "developerInstructions", event.target.value)}
+                    required
+                    rows={14}
+                    value={worker.developerInstructions}
+                  />
+                </label>
+                <p className="fixed-setting">Sandbox: <code>{worker.sandboxMode}</code></p>
+              </section>
+            );
+          })}
+        </div>
+
+        <div className="settings-actions">
+          <button className="primary-button" disabled={saving} type="submit">
+            {saving ? "Saving…" : "Save new-project defaults"}
+          </button>
+          <button className="secondary-button" disabled={saving} onClick={onPreview} type="button">
+            Preview generated files
+          </button>
+          <button className="text-button" disabled={saving} onClick={onReset} type="button">
+            Reset to bundled defaults
+          </button>
+        </div>
+
+        {preview && (
+          <section className="panel generated-preview" aria-label="Generated file preview">
+            <p className="section-label">Generated file preview</p>
+            {preview.map((file) => (
+              <details key={file.path}>
+                <summary>{file.path}</summary>
+                <pre>{file.content}</pre>
+              </details>
+            ))}
+          </section>
+        )}
+      </form>
+    </div>
+  );
 }
 
 export function TodoPanel({

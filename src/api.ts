@@ -4,8 +4,10 @@ import { open } from "@tauri-apps/plugin-dialog";
 
 import type {
   CompletionProposal,
+  GeneratedSubagentFile,
   ProjectDetail,
   ProjectSummary,
+  SubagentSettings,
 } from "./types";
 
 export function listProjects(): Promise<ProjectSummary[]> {
@@ -16,8 +18,24 @@ export function registerProject(path: string): Promise<ProjectSummary> {
   return invoke("register_project", { path });
 }
 
-export function createProject(parentPath: string, name: string): Promise<ProjectSummary> {
-  return invoke("create_project", { parentPath, name });
+export function createProject(parentPath: string, name: string, initializeGit: boolean): Promise<ProjectSummary> {
+  return invoke("create_project", { parentPath, name, initializeGit });
+}
+
+export function getSubagentSettings(): Promise<SubagentSettings> {
+  return invoke("get_subagent_settings");
+}
+
+export function saveSubagentSettings(settings: SubagentSettings): Promise<SubagentSettings> {
+  return invoke("save_subagent_settings", { settings });
+}
+
+export function resetSubagentSettings(): Promise<SubagentSettings> {
+  return invoke("reset_subagent_settings");
+}
+
+export function previewSubagentFiles(settings: SubagentSettings): Promise<GeneratedSubagentFile[]> {
+  return invoke("preview_subagent_files", { settings });
 }
 
 export function removeProject(id: string): Promise<void> {

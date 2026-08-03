@@ -6,6 +6,7 @@ mod models;
 mod observer;
 pub mod project_state;
 mod registry;
+mod subagent_settings;
 mod watcher;
 
 use std::{
@@ -20,6 +21,7 @@ use models::{
 };
 use project_state::ProjectStateService;
 use registry::RegistryStore;
+use subagent_settings::{GeneratedSubagentFile, SubagentSettings, SubagentSettingsStore};
 use tauri::{AppHandle, Manager, State};
 use uuid::Uuid;
 use watcher::ProjectWatcher;
@@ -29,6 +31,7 @@ struct AppState {
     watcher: Mutex<ProjectWatcher>,
     git_sync: GitSyncManager,
     project_state: Arc<ProjectStateService>,
+    subagent_settings: Mutex<SubagentSettingsStore>,
 }
 
 #[tauri::command]
@@ -99,14 +102,26 @@ async fn register_project(
 async fn create_project(
     parent_path: String,
     name: String,
+    initialize_git: bool,
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<ProjectSummary, String> {
+    let subagent_settings = state
+        .subagent_settings
+        .lock()
+        .map_err(|_| "The subagent settings are unavailable".to_string())?
+        .settings()
+        .clone();
     let entry = state
         .registry
         .lock()
         .map_err(|_| "The project registry is unavailable".to_string())?
-        .create_and_register(&PathBuf::from(parent_path), &name)
+        .create_and_register(
+            &PathBuf::from(parent_path),
+            &name,
+            initialize_git,
+            &subagent_settings,
+        )
         .map_err(|error| error.to_string())?;
 
     state
@@ -126,6 +141,52 @@ async fn create_project(
             .map_err(|error| format!("Unable to inspect project: {error}"))?;
     state.git_sync.fetch(app, fetch_entry);
     Ok(project)
+}
+
+#[tauri::command]
+fn get_subagent_settings(state: State<'_, AppState>) -> Result<SubagentSettings, String> {
+    Ok(state
+        .subagent_settings
+        .lock()
+        .map_err(|_| "The subagent settings are unavailable".to_string())?
+        .settings()
+        .clone())
+}
+
+#[tauri::command]
+fn save_subagent_settings(
+    settings: SubagentSettings,
+    state: State<'_, AppState>,
+) -> Result<SubagentSettings, String> {
+    state
+        .subagent_settings
+        .lock()
+        .map_err(|_| "The subagent settings are unavailable".to_string())?
+        .save(settings)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn reset_subagent_settings(state: State<'_, AppState>) -> Result<SubagentSettings, String> {
+    state
+        .subagent_settings
+        .lock()
+        .map_err(|_| "The subagent settings are unavailable".to_string())?
+        .reset()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn preview_subagent_files(
+    settings: SubagentSettings,
+    state: State<'_, AppState>,
+) -> Result<Vec<GeneratedSubagentFile>, String> {
+    state
+        .subagent_settings
+        .lock()
+        .map_err(|_| "The subagent settings are unavailable".to_string())?
+        .preview(&settings)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -331,6 +392,7 @@ pub fn run() {
             let registry_path = app.path().app_data_dir()?.join("registered-projects.json");
             let sync_cache_path = app.path().app_data_dir()?.join("git-sync-cache.json");
             let proposal_path = app.path().app_data_dir()?.join("completion-proposals.json");
+            let subagent_settings_path = app.path().app_data_dir()?.join("subagent-settings.json");
             let registry = RegistryStore::load(registry_path)
                 .map_err(|error| Box::<dyn std::error::Error>::from(error.to_string()))?;
             let mut watcher = ProjectWatcher::new(app.handle().clone())?;
@@ -346,6 +408,8 @@ pub fn run() {
                 ProjectStateService::load(proposal_path)
                     .map_err(|error| Box::<dyn std::error::Error>::from(error.to_string()))?,
             );
+            let subagent_settings = SubagentSettingsStore::load(subagent_settings_path)
+                .map_err(|error| Box::<dyn std::error::Error>::from(error.to_string()))?;
             agent_api::start(agent_api::AgentApiContext {
                 registry: Arc::clone(&registry),
                 project_state: Arc::clone(&project_state),
@@ -356,6 +420,7 @@ pub fn run() {
                 watcher: Mutex::new(watcher),
                 git_sync: git_sync.clone(),
                 project_state,
+                subagent_settings: Mutex::new(subagent_settings),
             });
             for entry in startup_entries {
                 git_sync.fetch(app.handle().clone(), entry);
@@ -376,7 +441,11 @@ pub fn run() {
             list_pending_reviews,
             approve_completion,
             reject_completion,
-            add_work_history
+            add_work_history,
+            get_subagent_settings,
+            save_subagent_settings,
+            reset_subagent_settings,
+            preview_subagent_files
         ])
         .run(tauri::generate_context!())
         .expect("error while running Projector");

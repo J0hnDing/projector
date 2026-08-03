@@ -130,3 +130,29 @@ Added explicit feature or research categories to every existing Projector TODO a
 ### Limitations
 
 none
+
+## 2026-07-31 22:38 — Initialize new projects with README and optional Git
+
+- Category: feature
+- Area: project-creation
+
+### Summary
+
+Added an enabled-by-default, user-controlled Git initialization option to project creation using libgit2. New projects now receive a minimal README alongside AGENTS.md, TODO.md, and WORK_HISTORY.md. Git initialization respects a valid configured init.defaultBranch with a main fallback, creates no commit or remote, and rolls back the new directory if creation or registration fails. Updated the Tauri command, frontend API and dialog, documentation, and Rust and React coverage.
+
+### Limitations
+
+none
+
+## 2026-08-03 00:36 — Initialize new projects with configurable subagent workers
+
+- Category: feature
+- Area: project creation and settings
+
+### Summary
+
+Added static subagent defaults, creation-time AGENTS.md and .codex/agents worker generation, editable global settings with backend validation and previews, and tests covering default mappings, customization, reset, snapshot behavior, and no migration of registered projects. Worker low uses gpt-5.6-luna at medium effort and worker medium uses gpt-5.6-luna at max effort.
+
+### Limitations
+
+none

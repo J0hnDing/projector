@@ -4,7 +4,8 @@ Projector is a lightweight local desktop project manager shared by people and so
 
 ## MVP capabilities
 
-- Create Projector-ready project folders or register existing local project directories. New projects receive `AGENTS.md`, `TODO.md`, and `WORK_HISTORY.md`; removing a project only removes its registry entry.
+- Create Projector-ready project folders or register existing local project directories. New projects receive `README.md`, `AGENTS.md`, `TODO.md`, `WORK_HISTORY.md`, and three project-scoped Codex worker configurations under `.codex/agents/`, with an enabled-by-default option to initialize a Git repository; removing a project only removes its registry entry.
+- Configure the AGENTS.md subagent guidance and each new project's worker model, reasoning effort, description, and developer instructions from a global Settings page. Settings are creation-time defaults and never rewrite existing projects.
 - Show project name, path, Git branch, clean/dirty state, upstream relationship, last successful fetch, last repository activity, and last-opened time.
 - Render `README.md`, `TODO.md`, and work history (`WORK_HISTORY.md` or `WORKING_HISTORY.md`) from either the project root or `docs/`, using case-insensitive filename matching.
 - Parse TODOs and working history into validated structured records while preserving malformed or unrecognized source text.
@@ -18,7 +19,7 @@ Projector is a lightweight local desktop project manager shared by people and so
 - Refresh automatically after changes beneath a registered directory, with a manual refresh available as a fallback.
 - Handle missing documents, non-Git folders, missing remotes or upstreams, authentication/offline failures, fetch timeouts, moved/inaccessible paths, and read errors without preventing access to the rest of the project view.
 
-Projector runs only two bounded Git commands: the background fetch above and an explicitly selected `git pull --ff-only --no-rebase --recurse-submodules=no`. Pull refuses dirty working trees, detached branches, missing upstreams, and histories that require a merge or rebase. Projector never pushes, checks out branches, builds projects, provides project runtime controls, or exposes generic file or shell operations.
+Projector initializes Git directly through libgit2 only when the user selects that option while creating a project. It does not create an initial commit or remote. The only Git subprocesses are the bounded background fetch above and an explicitly selected `git pull --ff-only --no-rebase --recurse-submodules=no`. Pull refuses dirty working trees, detached branches, missing upstreams, and histories that require a merge or rebase. Projector never pushes, checks out branches, builds projects, provides project runtime controls, or exposes generic file or shell operations.
 
 ## Stack and design
 
@@ -105,9 +106,9 @@ Missing files are shown as missing. A document path that resolves outside the re
 
 ## Local data and access
 
-The application stores `registered-projects.json` in the operating system application-data directory for the `com.local.projector` identifier. It contains only registry version, project ID, canonical location, display name, registration time, and last-opened time. A separate `git-sync-cache.json` stores only the last successful fetch time per project. Pending review proposals are stored in `completion-proposals.json`; each contains its kind, registered project ID, proposed history entry, request time, and, for TODO completion, the TODO snapshot needed for stale-proposal validation. This explicitly permitted internal proposal storage lets reviews survive restarts. Other project content and Git history are not copied into application storage.
+The application stores `registered-projects.json` in the operating system application-data directory for the `com.local.projector` identifier. It contains only registry version, project ID, canonical location, display name, registration time, and last-opened time. A separate `git-sync-cache.json` stores only the last successful fetch time per project. Pending review proposals are stored in `completion-proposals.json`; each contains its kind, registered project ID, proposed history entry, request time, and, for TODO completion, the TODO snapshot needed for stale-proposal validation. User-edited new-project subagent defaults are stored as preferences in `subagent-settings.json`; removing that override restores the bundled static defaults. This explicitly permitted internal storage lets preferences and reviews survive restarts. Other project content and Git history are not copied into application storage.
 
-Filesystem observation is created only for registered roots. Project creation accepts a user-selected parent folder and a validated single folder name; after creation and registration, document and Git requests, including pull, use the registered project ID. Git worktrees whose `.git` metadata resolves outside the registered root are intentionally not inspected in the MVP.
+Filesystem observation is created only for registered roots. Project creation accepts a user-selected parent folder and a validated single folder name, creates a minimal README and Projector state documents, snapshots the effective static-or-user-edited subagent configuration into `AGENTS.md` and `.codex/agents/`, and can initialize in-root Git metadata through libgit2. Existing projects are never migrated or rewritten when defaults change. Git initialization uses the configured `init.defaultBranch` when valid and otherwise uses `main`; it creates neither a commit nor a remote. After creation and registration, document and Git requests, including pull, use the registered project ID. Git worktrees whose `.git` metadata resolves outside the registered root are intentionally not inspected in the MVP.
 
 ## Development
 

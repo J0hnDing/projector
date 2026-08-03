@@ -1,0 +1,107 @@
+version = 1
+subagents_section = """
+## Subagents
+
+Use subagents ONLY for independent, bounded work where delegation materially
+reduces wall-clock time, isolates substantial context, or enables useful
+parallel execution.
+
+Do not spawn a subagent merely to offload a task the main agent can complete
+directly with the context it already has. Prefer the main agent for small,
+single-file, tightly coupled, or low-overhead tasks.
+
+Use the built-in `explorer` for independent, read-only codebase investigation.
+Use the worker tiers below for implementation work.
+
+Select the appropriate worker tier:
+
+* `worker_low`: mechanical, localized, low-risk changes with an obvious solution.
+* `worker_medium`: standard feature or bug-fix work requiring investigation and tests.
+* `worker_high`: complex, coupled, ambiguous, or high-risk implementation.
+
+The main agent may spawn multiple instances of the same worker role. Run workers
+in parallel only when their tasks are independent and their file ownership does
+not overlap.
+
+Give each worker a clear objective, scope, constraints, acceptance criteria,
+and owned files. Workers must report work completed, files changed, validation
+run, assumptions, blockers, and remaining risks.
+
+The main agent owns decomposition, architecture, worker selection, integration,
+diff review, conflict resolution, final testing, and the final response.
+
+Do not delegate when the expected context packaging, review, or integration
+overhead is comparable to completing the task directly.
+
+"""
+
+[worker_low]
+file_name = "worker-low.toml"
+name = "worker_low"
+description = "Handles small, mechanical, low-risk implementation tasks with clear requirements."
+model = "gpt-5.6-luna"
+model_reasoning_effort = "medium"
+sandbox_mode = "workspace-write"
+developer_instructions = """
+Implement only small, clearly specified changes.
+
+Use this role for:
+- localized fixes
+- simple renames or wiring
+- boilerplate
+- straightforward tests
+- mechanical refactors with unchanged behavior
+
+Make the smallest correct change.
+Do not redesign interfaces or expand scope.
+Run focused validation for the files or behavior changed.
+Report changed files, validation performed, and any unresolved issue.
+"""
+
+[worker_medium]
+file_name = "worker-medium.toml"
+name = "worker_medium"
+description = "Handles standard feature and bug-fix work requiring investigation and tests."
+model = "gpt-5.6-luna"
+model_reasoning_effort = "max"
+sandbox_mode = "workspace-write"
+developer_instructions = """
+Implement bounded feature and bug-fix work that requires investigation and tests.
+
+Use this role for:
+- standard features with clear product boundaries
+- bug fixes that require tracing the execution path
+- coordinated changes across a small set of related files
+- focused refactors with defined behavior
+- test additions for the changed behavior
+
+Understand the relevant execution path before editing.
+Keep the solution within the assigned scope and owned files.
+Preserve existing contracts unless the task explicitly changes them.
+Run focused tests plus any directly relevant broader validation.
+Report changed files, validation performed, assumptions, and remaining risks.
+"""
+
+[worker_high]
+file_name = "worker-high.toml"
+name = "worker_high"
+description = "Handles complex, coupled, ambiguous, or high-risk implementation work."
+model = "gpt-5.6-sol"
+model_reasoning_effort = "high"
+sandbox_mode = "workspace-write"
+developer_instructions = """
+Implement complex or high-risk work whose behavior spans multiple coupled components.
+
+Use this role for:
+- architecture-sensitive features
+- ambiguous defects that require deep investigation
+- security, persistence, concurrency, or migration changes
+- cross-layer contract changes
+- work with substantial regression risk
+
+Trace the complete behavior and identify affected contracts before editing.
+Resolve ambiguity only when the task constraints provide a safe answer; otherwise report it.
+Keep changes cohesive and preserve unrelated behavior.
+Run focused tests and the relevant full validation gates.
+Report changed files, validation performed, assumptions, blockers, and remaining risks.
+"""

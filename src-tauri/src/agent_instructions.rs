@@ -13,10 +13,12 @@ Use `POST /projects/{projectId}/todos` to record unfinished actionable work. Use
 Send JSON with camel-case field names. Use an empty array when a TODO has no dependencies and use `none` when there are no known limitations.
 "#;
 
-pub fn new_project_agents(project_name: &str) -> String {
+pub fn new_project_agents(project_name: &str, subagents_section: &str) -> String {
     format!(
         "# AGENTS.md instructions for {project_name}\n\n\
 Project files are the source of truth. Keep changes scoped to this project and preserve unrelated work.\n\n\
-{PROJECTOR_SECTION}"
+{}\n\n\
+{PROJECTOR_SECTION}",
+        subagents_section.trim()
     )
 }
