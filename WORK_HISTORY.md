@@ -156,3 +156,16 @@ Added static subagent defaults, creation-time AGENTS.md and .codex/agents worker
 ### Limitations
 
 none
+
+## 2026-08-03 22:47 — Add Codex Desktop agent monitoring using hooks
+
+- Category: feature
+- Area: codex-desktop-integration
+
+### Summary
+
+Added an opt-in Codex Desktop lifecycle-hook integration with bounded content-free session storage, manual per-project linking, factual subagent state and transition UI, restart-safe unknown states, validation and retention tests, and documented best-effort Windows hook setup.
+
+### Limitations
+
+Lifecycle hooks expose only running, stopped, or unknown facts. Events missed while Projector is closed are not replayed, and waiting, successful completion, and failure are not inferred. Hook setup and session linking remain manual.

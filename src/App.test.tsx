@@ -4,12 +4,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import App, {
   DocumentPanel,
+  CodexPanel,
   HistoryPanel,
   PendingReviewPanel,
   TodoPanel,
 } from "./App";
 import * as api from "./api";
-import type { CompletionProposal, ProjectDetail, SubagentSettings } from "./types";
+import type { CodexMonitoringSnapshot, CompletionProposal, ProjectDetail, SubagentSettings } from "./types";
 
 vi.mock("./api", () => ({
   listProjects: vi.fn(),
@@ -19,6 +20,9 @@ vi.mock("./api", () => ({
   saveSubagentSettings: vi.fn(),
   resetSubagentSettings: vi.fn(),
   previewSubagentFiles: vi.fn(),
+  listCodexSessions: vi.fn(),
+  linkCodexSession: vi.fn(),
+  unlinkCodexSession: vi.fn(),
   removeProject: vi.fn(),
   openProject: vi.fn(),
   refreshProject: vi.fn(),
@@ -154,6 +158,57 @@ const subagentSettings: SubagentSettings = {
   },
 };
 
+const detectedCodexMonitoring: CodexMonitoringSnapshot = {
+  detectedSessions: [{
+    sessionId: "session-detected",
+    cwd: "C:\\code\\example",
+    linkedProjectId: null,
+    state: "running",
+    firstSeenAt: "2026-08-03T12:00:00Z",
+    lastSeenAt: "2026-08-03T12:01:00Z",
+    agents: [],
+    transitions: [{
+      kind: "sessionStarted",
+      agentId: null,
+      agentType: null,
+      observedAt: "2026-08-03T12:00:00Z",
+    }],
+  }],
+  linkedSessions: [],
+};
+
+const linkedCodexMonitoring: CodexMonitoringSnapshot = {
+  detectedSessions: [],
+  linkedSessions: [{
+    ...detectedCodexMonitoring.detectedSessions[0],
+    linkedProjectId: detail.project.id,
+    agents: [{
+      agentId: "agent-1",
+      agentType: "worker_low",
+      state: "stopped",
+      firstSeenAt: "2026-08-03T12:00:10Z",
+      lastSeenAt: "2026-08-03T12:00:30Z",
+    }, {
+      agentId: "agent-2",
+      agentType: "worker_medium",
+      state: "unknown",
+      firstSeenAt: "2026-08-03T12:00:20Z",
+      lastSeenAt: "2026-08-03T12:01:00Z",
+    }],
+    transitions: [{
+      kind: "subagentStopped",
+      agentId: "agent-1",
+      agentType: "worker_low",
+      observedAt: "2026-08-03T12:00:30Z",
+    }, {
+      kind: "subagentUnknown",
+      agentId: "agent-2",
+      agentType: "worker_medium",
+      observedAt: "2026-08-03T12:01:00Z",
+    }],
+  }],
+};
+
 describe("App", () => {
   beforeEach(() => {
     vi.mocked(api.listProjects).mockReset();
@@ -169,6 +224,9 @@ describe("App", () => {
     vi.mocked(api.saveSubagentSettings).mockReset();
     vi.mocked(api.resetSubagentSettings).mockReset();
     vi.mocked(api.previewSubagentFiles).mockReset();
+    vi.mocked(api.listCodexSessions).mockReset();
+    vi.mocked(api.linkCodexSession).mockReset();
+    vi.mocked(api.unlinkCodexSession).mockReset();
     vi.mocked(api.listProjects).mockResolvedValue([]);
     vi.mocked(api.refreshProjects).mockResolvedValue([]);
     vi.mocked(api.listPendingReviews).mockResolvedValue([]);
@@ -181,6 +239,9 @@ describe("App", () => {
       { path: ".codex/agents/worker-medium.toml", content: 'name = "worker_medium"' },
       { path: ".codex/agents/worker-high.toml", content: 'name = "worker_high"' },
     ]);
+    vi.mocked(api.listCodexSessions).mockResolvedValue({ detectedSessions: [], linkedSessions: [] });
+    vi.mocked(api.linkCodexSession).mockResolvedValue(linkedCodexMonitoring);
+    vi.mocked(api.unlinkCodexSession).mockResolvedValue(detectedCodexMonitoring);
   });
 
   it("shows a clear first-run state", async () => {
@@ -316,6 +377,34 @@ describe("App", () => {
     await waitFor(() => expect(api.pullProject).toHaveBeenCalledWith(detail.project.id));
   });
 
+  it("manually links a detected Codex session from the project tab", async () => {
+    vi.mocked(api.listProjects).mockResolvedValue([detail.project]);
+    vi.mocked(api.openProject).mockResolvedValue(detail);
+    vi.mocked(api.listCodexSessions).mockResolvedValue(detectedCodexMonitoring);
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "Example" });
+    await userEvent.click(screen.getByRole("tab", { name: "Codex" }));
+    expect(await screen.findByLabelText("Detected Codex session")).toHaveValue("session-detected");
+    await userEvent.click(screen.getByRole("button", { name: "Link session" }));
+    await waitFor(() => expect(api.linkCodexSession).toHaveBeenCalledWith(
+      detail.project.id,
+      "session-detected",
+    ));
+    expect(await screen.findByText("worker_low")).toBeInTheDocument();
+  });
+
+  it("surfaces Codex monitoring API failures", async () => {
+    vi.mocked(api.listProjects).mockResolvedValue([detail.project]);
+    vi.mocked(api.openProject).mockResolvedValue(detail);
+    vi.mocked(api.listCodexSessions).mockRejectedValue(new Error("monitor offline"));
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "Example" });
+    await userEvent.click(screen.getByRole("tab", { name: "Codex" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("monitor offline");
+  });
+
   it("disables pull when the working tree is dirty", async () => {
     const dirtyDetail = {
       ...detail,
@@ -380,6 +469,41 @@ describe("DocumentPanel", () => {
     expect(content.closest("div")).toHaveAttribute("align", "center");
     expect(document.querySelector("script")).not.toBeInTheDocument();
     expect(screen.queryByText(/unsafe/)).not.toBeInTheDocument();
+  });
+});
+
+describe("CodexPanel", () => {
+  it("shows factual subagent states and can unlink a session", async () => {
+    const onUnlink = vi.fn();
+    render(
+      <CodexPanel
+        busySession={null}
+        monitoring={linkedCodexMonitoring}
+        onLink={vi.fn()}
+        onUnlink={onUnlink}
+      />,
+    );
+
+    expect(screen.getByText("worker_low")).toBeInTheDocument();
+    expect(screen.getByText("worker_medium")).toBeInTheDocument();
+    expect(screen.getByText("stopped")).toBeInTheDocument();
+    expect(screen.getByText("unknown")).toBeInTheDocument();
+    expect(screen.getByText("worker_medium subagent state became unknown")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Unlink" }));
+    expect(onUnlink).toHaveBeenCalledWith("session-detected");
+  });
+
+  it("shows the manual setup empty state without implying automatic linking", () => {
+    render(
+      <CodexPanel
+        busySession={null}
+        monitoring={{ detectedSessions: [], linkedSessions: [] }}
+        onLink={vi.fn()}
+        onUnlink={vi.fn()}
+      />,
+    );
+    expect(screen.getByText(/No unlinked sessions detected/)).toBeInTheDocument();
+    expect(screen.getByText("No Codex session linked")).toBeInTheDocument();
   });
 });
 

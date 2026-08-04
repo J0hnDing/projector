@@ -13,6 +13,7 @@ Projector is a lightweight local desktop project manager shared by people and so
 - Sort working history from newest to oldest; keep date/time, category, and area visible while opening summary and limitations in a closable detail window, with category and area filters.
 - Allow local agents to add TODOs and propose either TODO completion or standalone working-history entries through a loopback-only API. Pending proposals stay in Projector's internal storage until the user approves or rejects them.
 - Show all pending proposals in a dedicated review tab with local-only Approve and Reject actions.
+- Detect Codex Desktop sessions through opt-in lifecycle hooks, let the user link a session to a registered project, and show factual running, stopped, or unknown subagent states without reading transcripts or tool calls.
 - Show up to 25 recent commits.
 - Run `git fetch --all --prune` in the background at startup and on manual refresh, then report ahead, behind, diverged, synchronized, or unknown status.
 - Manually pull the selected project with fast-forward-only semantics when it has a checked-out upstream branch and a clean working tree.
@@ -67,7 +68,7 @@ Categories use the same values as TODOs. The UI displays entries newest first. F
 
 ## Local agent API
 
-While Projector is running, its JSON API is bound only to `http://127.0.0.1:48721/v1`. `GET /projects` returns registered project IDs and `GET /projects/{projectId}/state` reads structured state. The only mutations are:
+While Projector is running, its JSON API is bound only to `http://127.0.0.1:48721/v1`. `GET /projects` returns registered project IDs and `GET /projects/{projectId}/state` reads structured state. The project-state mutations are:
 
 - `POST /projects/{projectId}/todos`
 - `POST /projects/{projectId}/todos/{todoId}/complete`
@@ -78,6 +79,49 @@ Project and TODO IDs are URL parameters rather than redundant JSON fields. Addin
 The API rejects unknown registry IDs and never accepts a filesystem path. A completion request validates the TODO and its dependencies and rejects a duplicate request while that TODO already has a pending proposal. A standalone history request validates the proposed entry and current history document. Both store and return a proposal without changing project Markdown. Agents have no approval or rejection endpoint. The desktop's local-only approval action branches by proposal kind: TODO completion revalidates the live TODO snapshot and updates both documents with rollback, while standalone history atomically appends only its proposed entry. In both cases the persisted proposal is removed only after the project-file mutation succeeds; rejection removes only the proposal. There is no arbitrary Markdown, filesystem, shell, Git, or runtime endpoint. The HTTP contract is intentionally small so a later MCP adapter can remain a thin compatibility layer.
 
 Agents working in registered projects must use these operations rather than directly modifying `TODO.md` or `WORK_HISTORY.md`.
+
+## Codex Desktop hooks
+
+Codex monitoring is opt-in and Windows-local. Projector does not edit Codex configuration. To enable detection, merge the following four handlers into `%USERPROFILE%\.codex\hooks.json` while preserving any existing hooks:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [{
+      "hooks": [{
+        "type": "command",
+        "command": "powershell.exe -NoLogo -NoProfile -NonInteractive -Command \"$body=[Console]::In.ReadToEnd(); try { Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:48721/v1/codex/hooks' -Method Post -ContentType 'application/json' -Body $body -TimeoutSec 1 -ErrorAction Stop | Out-Null } catch {}; [Console]::Out.Write('{}')\"",
+        "timeout": 3
+      }]
+    }],
+    "SessionEnd": [{
+      "hooks": [{
+        "type": "command",
+        "command": "powershell.exe -NoLogo -NoProfile -NonInteractive -Command \"$body=[Console]::In.ReadToEnd(); try { Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:48721/v1/codex/hooks' -Method Post -ContentType 'application/json' -Body $body -TimeoutSec 1 -ErrorAction Stop | Out-Null } catch {}; [Console]::Out.Write('{}')\"",
+        "timeout": 3
+      }]
+    }],
+    "SubagentStart": [{
+      "hooks": [{
+        "type": "command",
+        "command": "powershell.exe -NoLogo -NoProfile -NonInteractive -Command \"$body=[Console]::In.ReadToEnd(); try { Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:48721/v1/codex/hooks' -Method Post -ContentType 'application/json' -Body $body -TimeoutSec 1 -ErrorAction Stop | Out-Null } catch {}; [Console]::Out.Write('{}')\"",
+        "timeout": 3
+      }]
+    }],
+    "SubagentStop": [{
+      "hooks": [{
+        "type": "command",
+        "command": "powershell.exe -NoLogo -NoProfile -NonInteractive -Command \"$body=[Console]::In.ReadToEnd(); try { Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:48721/v1/codex/hooks' -Method Post -ContentType 'application/json' -Body $body -TimeoutSec 1 -ErrorAction Stop | Out-Null } catch {}; [Console]::Out.Write('{}')\"",
+        "timeout": 3
+      }]
+    }]
+  }
+}
+```
+
+Review and trust the exact hook definition in Codex with `/hooks`, then start or resume a Codex Desktop session while Projector is running. The command forwards the hook JSON to `POST /v1/codex/hooks`, always emits an empty JSON object, and exits successfully if Projector is unavailable, so monitoring cannot block or steer Codex. In the selected project's **Codex** tab, choose a detected session and link it manually. Projector never links by working directory automatically.
+
+Only `session_id`, `cwd`, `agent_id`, `agent_type`, receipt timestamps, and derived lifecycle transitions are retained. Projector ignores model, permission, prompt, assistant-message, transcript-path, and tool fields. Duplicate events do not create duplicate transitions; a stopped subagent ID is not reopened by a late start event. The store retains at most 50 unlinked sessions and 100 transitions per session. Linked sessions remain until they are unlinked or their project is removed.
 
 ## Project migration
 
@@ -106,7 +150,7 @@ Missing files are shown as missing. A document path that resolves outside the re
 
 ## Local data and access
 
-The application stores `registered-projects.json` in the operating system application-data directory for the `com.local.projector` identifier. It contains only registry version, project ID, canonical location, display name, registration time, and last-opened time. A separate `git-sync-cache.json` stores only the last successful fetch time per project. Pending review proposals are stored in `completion-proposals.json`; each contains its kind, registered project ID, proposed history entry, request time, and, for TODO completion, the TODO snapshot needed for stale-proposal validation. User-edited new-project subagent defaults are stored as preferences in `subagent-settings.json`; removing that override restores the bundled static defaults. This explicitly permitted internal storage lets preferences and reviews survive restarts. Other project content and Git history are not copied into application storage.
+The application stores `registered-projects.json` in the operating system application-data directory for the `com.local.projector` identifier. It contains only registry version, project ID, canonical location, display name, registration time, and last-opened time. A separate `git-sync-cache.json` stores only the last successful fetch time per project. Pending review proposals are stored in `completion-proposals.json`; each contains its kind, registered project ID, proposed history entry, request time, and, for TODO completion, the TODO snapshot needed for stale-proposal validation. User-edited new-project subagent defaults are stored as preferences in `subagent-settings.json`; removing that override restores the bundled static defaults. Opt-in Codex lifecycle metadata and manual project links are stored in `codex-sessions.json` using the bounded, content-free contract above. This explicitly permitted internal storage lets preferences, reviews, and monitoring links survive restarts. Other project content and Git history are not copied into application storage.
 
 Filesystem observation is created only for registered roots. Project creation accepts a user-selected parent folder and a validated single folder name, creates a minimal README and Projector state documents, snapshots the effective static-or-user-edited subagent configuration into `AGENTS.md` and `.codex/agents/`, and can initialize in-root Git metadata through libgit2. Existing projects are never migrated or rewritten when defaults change. Git initialization uses the configured `init.defaultBranch` when valid and otherwise uses `main`; it creates neither a commit nor a remote. After creation and registration, document and Git requests, including pull, use the registered project ID. Git worktrees whose `.git` metadata resolves outside the registered root are intentionally not inspected in the MVP.
 
@@ -145,6 +189,7 @@ The project-local `@tauri-apps/cli` is used; a global Tauri CLI installation is 
 - The supported filename aliases and root-before-`docs/` lookup order are fixed for the MVP.
 - The registry has no import/export, path relocation, or custom project naming yet.
 - The loopback API is available only while the Projector desktop process is running and has no remote transport.
+- Codex hook events missed while Projector is closed cannot be replayed. Persisted running states become unknown after restart, and lifecycle hooks cannot reliably distinguish waiting, success, or failure.
 - Multi-file approval provides in-process rollback if a replacement fails; it does not claim a distributed transaction across storage devices.
 - Migrated legacy entries without a source time use `00:00`; absent areas use `unknown`; absent limitations use `none`.
 - This milestone has no project execution, runtime health monitoring, arbitrary file editing, MCP adapter, cloud synchronization, analytics, or team features.

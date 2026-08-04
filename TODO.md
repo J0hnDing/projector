@@ -52,14 +52,3 @@ unknown
 
 -Acceptance Criteria:
 unknown
-
-## TODO-006: Add Codex Desktop agent monitoring using hooks
-
-- Priority: medium
-- Category: feature
-- Area: codex-desktop-integration
-- Dependencies: none
-- Rationale: Projector should observe Codex Desktop agent activity locally so users can understand which agents are active, waiting, completed, or failed without manually inspecting each task.
-
--Acceptance Criteria:
-Define the supported Codex Desktop hook events and an explicit local setup boundary; ingest lifecycle and progress events only for user-authorized projects or tasks; display current agent state and recent transitions without adding agent control; recover cleanly from Projector or Codex Desktop restarts; avoid persisting secrets or unrestricted prompt content; and cover event validation, duplicate or out-of-order delivery, disconnects, and UI states with tests that do not require a live Codex Desktop session.

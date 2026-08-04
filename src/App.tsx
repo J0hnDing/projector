@@ -7,6 +7,9 @@ import remarkGfm from "remark-gfm";
 
 import * as api from "./api";
 import type {
+  CodexLifecycleState,
+  CodexMonitoringSnapshot,
+  CodexTransitionKind,
   CompletionProposal,
   GeneratedSubagentFile,
   GitInfo,
@@ -23,7 +26,7 @@ import type {
   WorkHistoryEntry,
 } from "./types";
 
-type Tab = "overview" | "readme" | "todo" | "pending" | "history" | "git";
+type Tab = "overview" | "readme" | "todo" | "pending" | "history" | "git" | "codex";
 
 const tabs: Array<{ id: Tab; label: string }> = [
   { id: "overview", label: "Overview" },
@@ -32,6 +35,7 @@ const tabs: Array<{ id: Tab; label: string }> = [
   { id: "pending", label: "Pending Review" },
   { id: "history", label: "Working history" },
   { id: "git", label: "Git activity" },
+  { id: "codex", label: "Codex" },
 ];
 
 type WorkerKey = "workerLow" | "workerMedium" | "workerHigh";
@@ -82,6 +86,8 @@ export default function App() {
   const [subagentSettings, setSubagentSettings] = useState<SubagentSettings | null>(null);
   const [settingsPreview, setSettingsPreview] = useState<GeneratedSubagentFile[] | null>(null);
   const [settingsMessage, setSettingsMessage] = useState<string | null>(null);
+  const [codexMonitoring, setCodexMonitoring] = useState<CodexMonitoringSnapshot | null>(null);
+  const [codexBusySession, setCodexBusySession] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const selectedIdRef = useRef<string | null>(null);
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -188,6 +194,26 @@ export default function App() {
       window.clearInterval(timer);
     };
   }, [selectedId]);
+
+  useEffect(() => {
+    if (!selectedId || tab !== "codex") return;
+    let active = true;
+    const updateCodexMonitoring = async () => {
+      try {
+        const monitoring = await api.listCodexSessions(selectedId);
+        if (active) setCodexMonitoring(monitoring);
+      } catch (reason) {
+        if (active) setError(`Codex monitoring updates are unavailable: ${messageFrom(reason)}`);
+      }
+    };
+    setCodexMonitoring(null);
+    void updateCodexMonitoring();
+    const timer = window.setInterval(() => void updateCodexMonitoring(), 2_000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [selectedId, tab]);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -333,6 +359,34 @@ export default function App() {
       setError(messageFrom(reason));
     } finally {
       setReviewingProposal(null);
+    }
+  };
+
+  const linkCodexSession = async (sessionId: string) => {
+    const id = selectedIdRef.current;
+    if (!id) return;
+    try {
+      setError(null);
+      setCodexBusySession(sessionId);
+      setCodexMonitoring(await api.linkCodexSession(id, sessionId));
+    } catch (reason) {
+      setError(`Unable to link Codex session: ${messageFrom(reason)}`);
+    } finally {
+      setCodexBusySession(null);
+    }
+  };
+
+  const unlinkCodexSession = async (sessionId: string) => {
+    const id = selectedIdRef.current;
+    if (!id) return;
+    try {
+      setError(null);
+      setCodexBusySession(sessionId);
+      setCodexMonitoring(await api.unlinkCodexSession(id, sessionId));
+    } catch (reason) {
+      setError(`Unable to unlink Codex session: ${messageFrom(reason)}`);
+    } finally {
+      setCodexBusySession(null);
     }
   };
 
@@ -483,6 +537,10 @@ export default function App() {
             onRemove={() => void remove()}
             onApproveCompletion={(proposalId) => void approveCompletion(proposalId)}
             onRejectCompletion={(proposalId) => void rejectCompletion(proposalId)}
+            codexMonitoring={codexMonitoring}
+            codexBusySession={codexBusySession}
+            onLinkCodexSession={(sessionId) => void linkCodexSession(sessionId)}
+            onUnlinkCodexSession={(sessionId) => void unlinkCodexSession(sessionId)}
           />
         ) : (
           <CenteredMessage
@@ -591,6 +649,10 @@ function ProjectView({
   onRemove,
   onApproveCompletion,
   onRejectCompletion,
+  codexMonitoring,
+  codexBusySession,
+  onLinkCodexSession,
+  onUnlinkCodexSession,
 }: {
   detail: ProjectDetail;
   tab: Tab;
@@ -603,6 +665,10 @@ function ProjectView({
   onRemove: () => void;
   onApproveCompletion: (proposalId: string) => void;
   onRejectCompletion: (proposalId: string) => void;
+  codexMonitoring: CodexMonitoringSnapshot | null;
+  codexBusySession: string | null;
+  onLinkCodexSession: (sessionId: string) => void;
+  onUnlinkCodexSession: (sessionId: string) => void;
 }) {
   const pullUnavailableReason = getPullUnavailableReason(detail.project.git);
   return (
@@ -669,6 +735,14 @@ function ProjectView({
           />
         )}
         {tab === "git" && <GitPanel git={detail.project.git} />}
+        {tab === "codex" && (
+          <CodexPanel
+            busySession={codexBusySession}
+            monitoring={codexMonitoring}
+            onLink={onLinkCodexSession}
+            onUnlink={onUnlinkCodexSession}
+          />
+        )}
       </section>
     </div>
   );
@@ -781,6 +855,141 @@ function GitPanel({ git }: { git: GitInfo }) {
       </section>
     </div>
   );
+}
+
+export function CodexPanel({
+  monitoring,
+  busySession,
+  onLink,
+  onUnlink,
+}: {
+  monitoring: CodexMonitoringSnapshot | null;
+  busySession: string | null;
+  onLink: (sessionId: string) => void;
+  onUnlink: (sessionId: string) => void;
+}) {
+  const [selectedSession, setSelectedSession] = useState("");
+  useEffect(() => {
+    if (!monitoring?.detectedSessions.some((session) => session.sessionId === selectedSession)) {
+      setSelectedSession(monitoring?.detectedSessions[0]?.sessionId ?? "");
+    }
+  }, [monitoring, selectedSession]);
+
+  if (!monitoring) {
+    return <StatusMessage title="Loading Codex sessionsâ€¦" />;
+  }
+
+  return (
+    <div className="codex-panel">
+      <section className="panel codex-link-panel">
+        <div>
+          <p className="section-label">Detected Codex sessions</p>
+          <p>Link a locally detected session manually. Projector never reads prompts, responses, transcripts, or tool calls.</p>
+        </div>
+        {monitoring.detectedSessions.length > 0 ? (
+          <div className="codex-link-controls">
+            <label>
+              Session
+              <select
+                aria-label="Detected Codex session"
+                onChange={(event) => setSelectedSession(event.target.value)}
+                value={selectedSession}
+              >
+                {monitoring.detectedSessions.map((session) => (
+                  <option key={session.sessionId} value={session.sessionId}>
+                    {session.sessionId} Â· {session.cwd}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button
+              className="primary-button"
+              disabled={!selectedSession || busySession !== null}
+              onClick={() => onLink(selectedSession)}
+            >
+              {busySession === selectedSession ? "Linkingâ€¦" : "Link session"}
+            </button>
+          </div>
+        ) : (
+          <div className="notice">No unlinked sessions detected. Configure the four lifecycle hooks and start or resume a Codex session.</div>
+        )}
+      </section>
+
+      <section className="codex-session-list" aria-label="Linked Codex sessions">
+        {monitoring.linkedSessions.length === 0 ? (
+          <StatusMessage title="No Codex session linked" body="Detected sessions stay unassigned until you link one to this project." />
+        ) : monitoring.linkedSessions.map((session) => (
+          <article className="panel codex-session-card" key={session.sessionId}>
+            <header>
+              <div>
+                <div className="codex-session-title">
+                  <code>{session.sessionId}</code>
+                  <LifecycleBadge state={session.state} />
+                </div>
+                <p title={session.cwd}>{session.cwd}</p>
+              </div>
+              <button
+                className="text-button danger"
+                disabled={busySession !== null}
+                onClick={() => onUnlink(session.sessionId)}
+              >
+                {busySession === session.sessionId ? "Unlinkingâ€¦" : "Unlink"}
+              </button>
+            </header>
+            <p className="codex-observed">Last observed {formatDate(session.lastSeenAt)}</p>
+
+            <section>
+              <p className="section-label">Subagents</p>
+              {session.agents.length === 0 ? (
+                <p className="codex-empty">No subagents observed in this session.</p>
+              ) : (
+                <div className="codex-agent-list">
+                  {session.agents.map((agent) => (
+                    <div className="codex-agent-row" key={agent.agentId}>
+                      <div>
+                        <strong>{agent.agentType}</strong>
+                        <code>{agent.agentId}</code>
+                      </div>
+                      <LifecycleBadge state={agent.state} />
+                      <time>{formatDate(agent.lastSeenAt)}</time>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+
+            <section>
+              <p className="section-label">Recent transitions</p>
+              <ol className="codex-transition-list">
+                {[...session.transitions].reverse().map((transition, index) => (
+                  <li key={`${transition.observedAt}-${transition.kind}-${transition.agentId ?? "session"}-${index}`}>
+                    <span>{transitionLabel(transition.kind, transition.agentType)}</span>
+                    <time>{formatDate(transition.observedAt)}</time>
+                  </li>
+                ))}
+              </ol>
+            </section>
+          </article>
+        ))}
+      </section>
+    </div>
+  );
+}
+
+function LifecycleBadge({ state }: { state: CodexLifecycleState }) {
+  return <span className={`lifecycle-badge ${state}`}>{state}</span>;
+}
+
+function transitionLabel(kind: CodexTransitionKind, agentType: string | null): string {
+  const subject = agentType ? `${agentType} subagent` : "Session";
+  switch (kind) {
+    case "sessionStarted": return "Session started";
+    case "sessionStopped": return "Session stopped";
+    case "sessionUnknown": return "Session state became unknown after restart";
+    case "subagentStarted": return `${subject} started`;
+    case "subagentStopped": return `${subject} stopped`;
+    case "subagentUnknown": return `${subject} state became unknown`;
+  }
 }
 
 function CommitList({ commits }: { commits: GitInfo["recentCommits"] }) {

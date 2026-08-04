@@ -1,5 +1,6 @@
 mod agent_api;
 mod agent_instructions;
+mod codex_monitor;
 mod git_sync;
 pub mod migration;
 mod models;
@@ -14,6 +15,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use codex_monitor::{CodexMonitorStore, CodexMonitoringSnapshot};
 use git_sync::GitSyncManager;
 use models::{
     AddTodoInput, AddWorkHistoryInput, CompleteTodoInput, CompleteTodoResult, CompletionProposal,
@@ -32,6 +34,7 @@ struct AppState {
     git_sync: GitSyncManager,
     project_state: Arc<ProjectStateService>,
     subagent_settings: Mutex<SubagentSettingsStore>,
+    codex_monitor: Arc<Mutex<CodexMonitorStore>>,
 }
 
 #[tauri::command]
@@ -205,10 +208,65 @@ fn remove_project(id: Uuid, state: State<'_, AppState>) -> Result<(), String> {
             .map_err(|_| "The project watcher is unavailable".to_string())?
             .unwatch(&entry.path);
         state.git_sync.remove(id);
+        state
+            .codex_monitor
+            .lock()
+            .map_err(|_| "Codex monitoring is unavailable".to_string())?
+            .remove_project(id)
+            .map_err(|error| {
+                format!("Project was removed, but Codex monitoring cleanup failed: {error}")
+            })?;
         Ok(())
     } else {
         Err(format!("Unknown project id {id}"))
     }
+}
+
+#[tauri::command]
+fn list_codex_sessions(
+    id: Uuid,
+    state: State<'_, AppState>,
+) -> Result<CodexMonitoringSnapshot, String> {
+    registered_root(id, &state)?;
+    Ok(state
+        .codex_monitor
+        .lock()
+        .map_err(|_| "Codex monitoring is unavailable".to_string())?
+        .snapshot(id))
+}
+
+#[tauri::command]
+fn link_codex_session(
+    id: Uuid,
+    session_id: String,
+    state: State<'_, AppState>,
+) -> Result<CodexMonitoringSnapshot, String> {
+    registered_root(id, &state)?;
+    let mut monitor = state
+        .codex_monitor
+        .lock()
+        .map_err(|_| "Codex monitoring is unavailable".to_string())?;
+    monitor
+        .link(id, &session_id)
+        .map_err(|error| error.to_string())?;
+    Ok(monitor.snapshot(id))
+}
+
+#[tauri::command]
+fn unlink_codex_session(
+    id: Uuid,
+    session_id: String,
+    state: State<'_, AppState>,
+) -> Result<CodexMonitoringSnapshot, String> {
+    registered_root(id, &state)?;
+    let mut monitor = state
+        .codex_monitor
+        .lock()
+        .map_err(|_| "Codex monitoring is unavailable".to_string())?;
+    monitor
+        .unlink(id, &session_id)
+        .map_err(|error| error.to_string())?;
+    Ok(monitor.snapshot(id))
 }
 
 #[tauri::command]
@@ -393,6 +451,7 @@ pub fn run() {
             let sync_cache_path = app.path().app_data_dir()?.join("git-sync-cache.json");
             let proposal_path = app.path().app_data_dir()?.join("completion-proposals.json");
             let subagent_settings_path = app.path().app_data_dir()?.join("subagent-settings.json");
+            let codex_monitor_path = app.path().app_data_dir()?.join("codex-sessions.json");
             let registry = RegistryStore::load(registry_path)
                 .map_err(|error| Box::<dyn std::error::Error>::from(error.to_string()))?;
             let mut watcher = ProjectWatcher::new(app.handle().clone())?;
@@ -410,9 +469,14 @@ pub fn run() {
             );
             let subagent_settings = SubagentSettingsStore::load(subagent_settings_path)
                 .map_err(|error| Box::<dyn std::error::Error>::from(error.to_string()))?;
+            let codex_monitor = Arc::new(Mutex::new(
+                CodexMonitorStore::load(codex_monitor_path)
+                    .map_err(|error| Box::<dyn std::error::Error>::from(error.to_string()))?,
+            ));
             agent_api::start(agent_api::AgentApiContext {
                 registry: Arc::clone(&registry),
                 project_state: Arc::clone(&project_state),
+                codex_monitor: Arc::clone(&codex_monitor),
             })
             .map_err(Box::<dyn std::error::Error>::from)?;
             app.manage(AppState {
@@ -421,6 +485,7 @@ pub fn run() {
                 git_sync: git_sync.clone(),
                 project_state,
                 subagent_settings: Mutex::new(subagent_settings),
+                codex_monitor,
             });
             for entry in startup_entries {
                 git_sync.fetch(app.handle().clone(), entry);
@@ -445,7 +510,10 @@ pub fn run() {
             get_subagent_settings,
             save_subagent_settings,
             reset_subagent_settings,
-            preview_subagent_files
+            preview_subagent_files,
+            list_codex_sessions,
+            link_codex_session,
+            unlink_codex_session
         ])
         .run(tauri::generate_context!())
         .expect("error while running Projector");

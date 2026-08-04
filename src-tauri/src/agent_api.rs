@@ -14,6 +14,7 @@ use serde::Serialize;
 use uuid::Uuid;
 
 use crate::{
+    codex_monitor::{CodexHookEvent, CodexMonitorError, CodexMonitorStore},
     models::{
         AddTodoInput, AddWorkHistoryInput, CompleteTodoInput, CompletionProposal, ProjectState,
         RegistryEntry, TodoItem,
@@ -28,6 +29,7 @@ pub const AGENT_API_ADDR: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCA
 pub struct AgentApiContext {
     pub registry: Arc<Mutex<RegistryStore>>,
     pub project_state: Arc<ProjectStateService>,
+    pub codex_monitor: Arc<Mutex<CodexMonitorStore>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -41,6 +43,9 @@ struct ApiProject {
 struct Health {
     status: &'static str,
 }
+
+#[derive(Debug, Serialize)]
+struct EmptyResponse {}
 
 #[derive(Debug, Serialize)]
 struct ApiErrorBody {
@@ -110,6 +115,10 @@ fn router(context: AgentApiContext) -> Router {
         .route(
             "/v1/projects/{project_id}/work-history",
             post(add_work_history),
+        )
+        .route(
+            "/v1/codex/hooks",
+            post(ingest_codex_hook).layer(axum::extract::DefaultBodyLimit::max(16 * 1024)),
         )
         .with_state(context)
 }
@@ -189,6 +198,23 @@ async fn add_work_history(
         .map_err(state_error)
 }
 
+async fn ingest_codex_hook(
+    State(context): State<AgentApiContext>,
+    Json(event): Json<CodexHookEvent>,
+) -> Result<(StatusCode, Json<EmptyResponse>), ApiError> {
+    context
+        .codex_monitor
+        .lock()
+        .map_err(|_| ApiError {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            code: "codex_monitor_unavailable",
+            message: "Codex monitoring is unavailable".into(),
+        })?
+        .ingest(event)
+        .map_err(codex_monitor_error)?;
+    Ok((StatusCode::ACCEPTED, Json(EmptyResponse {})))
+}
+
 fn registered_project(context: &AgentApiContext, id: Uuid) -> Result<RegistryEntry, ApiError> {
     let registry = context.registry.lock().map_err(registry_unavailable)?;
     registry.find(id).cloned().ok_or_else(|| ApiError {
@@ -231,6 +257,21 @@ fn state_error(error: ProjectStateError) -> ApiError {
     }
 }
 
+fn codex_monitor_error(error: CodexMonitorError) -> ApiError {
+    match error {
+        CodexMonitorError::Validation(message) => ApiError {
+            status: StatusCode::UNPROCESSABLE_ENTITY,
+            code: "invalid_codex_hook_event",
+            message,
+        },
+        other => ApiError {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            code: "codex_monitor_failed",
+            message: other.to_string(),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -251,11 +292,15 @@ mod tests {
             RegistryStore::load(temp.path().join("registered-projects.json")).unwrap();
         let entry = registry.register(&project).unwrap();
         let proposal_file = temp.path().join("completion-proposals.json");
+        let codex_monitor_file = temp.path().join("codex-sessions.json");
         (
             temp,
             AgentApiContext {
                 registry: Arc::new(Mutex::new(registry)),
                 project_state: Arc::new(ProjectStateService::load(proposal_file).unwrap()),
+                codex_monitor: Arc::new(Mutex::new(
+                    CodexMonitorStore::load(codex_monitor_file).unwrap(),
+                )),
             },
             entry.id,
         )
@@ -413,6 +458,62 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(body["error"]["code"], "unknown_project");
+    }
+
+    #[tokio::test]
+    async fn codex_hook_route_accepts_only_bounded_lifecycle_events() {
+        let (_temp, context, project_id) = test_context();
+        let app = router(context.clone());
+        let (status, body) = json_request(
+            app.clone(),
+            "/v1/codex/hooks",
+            json!({
+                "hook_event_name": "SubagentStart",
+                "session_id": "session-1",
+                "cwd": "C:\\code\\project",
+                "agent_id": "agent-1",
+                "agent_type": "worker_low",
+                "transcript_path": "must-not-be-stored",
+                "last_assistant_message": "must-not-be-stored"
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert_eq!(body, json!({}));
+        let snapshot = context.codex_monitor.lock().unwrap().snapshot(project_id);
+        assert_eq!(snapshot.detected_sessions.len(), 1);
+        assert_eq!(snapshot.detected_sessions[0].agents.len(), 1);
+
+        assert_eq!(
+            request_status(
+                app,
+                "/v1/codex/hooks",
+                json!({
+                    "hook_event_name": "PostToolUse",
+                    "session_id": "session-1",
+                    "cwd": "C:\\code\\project",
+                    "tool_input": {"command": "ignored"}
+                }),
+            )
+            .await,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+
+        let oversized = json!({
+            "hook_event_name": "SessionStart",
+            "session_id": "session-large",
+            "cwd": "x".repeat(17_000)
+        });
+        let response = router(context)
+            .oneshot(
+                Request::post("/v1/codex/hooks")
+                    .header("content-type", "application/json")
+                    .body(Body::from(oversized.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
     }
 
     #[tokio::test]

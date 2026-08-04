@@ -147,3 +147,43 @@ export interface GeneratedSubagentFile {
   content: string;
 }
 
+export type CodexLifecycleState = "running" | "stopped" | "unknown";
+export type CodexTransitionKind =
+  | "sessionStarted"
+  | "sessionStopped"
+  | "sessionUnknown"
+  | "subagentStarted"
+  | "subagentStopped"
+  | "subagentUnknown";
+
+export interface CodexAgent {
+  agentId: string;
+  agentType: string;
+  state: CodexLifecycleState;
+  firstSeenAt: string;
+  lastSeenAt: string;
+}
+
+export interface CodexTransition {
+  kind: CodexTransitionKind;
+  agentId: string | null;
+  agentType: string | null;
+  observedAt: string;
+}
+
+export interface CodexSession {
+  sessionId: string;
+  cwd: string;
+  linkedProjectId: string | null;
+  state: CodexLifecycleState;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  agents: CodexAgent[];
+  transitions: CodexTransition[];
+}
+
+export interface CodexMonitoringSnapshot {
+  detectedSessions: CodexSession[];
+  linkedSessions: CodexSession[];
+}
+

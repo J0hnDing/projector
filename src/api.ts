@@ -3,6 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 
 import type {
+  CodexMonitoringSnapshot,
   CompletionProposal,
   GeneratedSubagentFile,
   ProjectDetail,
@@ -36,6 +37,18 @@ export function resetSubagentSettings(): Promise<SubagentSettings> {
 
 export function previewSubagentFiles(settings: SubagentSettings): Promise<GeneratedSubagentFile[]> {
   return invoke("preview_subagent_files", { settings });
+}
+
+export function listCodexSessions(id: string): Promise<CodexMonitoringSnapshot> {
+  return invoke("list_codex_sessions", { id });
+}
+
+export function linkCodexSession(id: string, sessionId: string): Promise<CodexMonitoringSnapshot> {
+  return invoke("link_codex_session", { id, sessionId });
+}
+
+export function unlinkCodexSession(id: string, sessionId: string): Promise<CodexMonitoringSnapshot> {
+  return invoke("unlink_codex_session", { id, sessionId });
 }
 
 export function removeProject(id: string): Promise<void> {
