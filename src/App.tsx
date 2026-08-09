@@ -83,6 +83,8 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsLoading, setSettingsLoading] = useState(false);
   const [settingsSaving, setSettingsSaving] = useState(false);
+  const [settingsMigrating, setSettingsMigrating] = useState(false);
+  const [migrationProjectIds, setMigrationProjectIds] = useState<string[]>([]);
   const [subagentSettings, setSubagentSettings] = useState<SubagentSettings | null>(null);
   const [settingsPreview, setSettingsPreview] = useState<GeneratedSubagentFile[] | null>(null);
   const [settingsMessage, setSettingsMessage] = useState<string | null>(null);
@@ -414,11 +416,35 @@ export default function App() {
     setError(null);
     try {
       setSubagentSettings(await api.saveSubagentSettings(subagentSettings));
-      setSettingsMessage("New-project subagent defaults saved.");
+      setSettingsMessage("Project and subagent settings saved.");
     } catch (reason) {
       setError(messageFrom(reason));
     } finally {
       setSettingsSaving(false);
+    }
+  };
+
+  const migrateSettings = async () => {
+    if (!subagentSettings || migrationProjectIds.length === 0) return;
+    setSettingsMigrating(true);
+    setSettingsMessage(null);
+    setError(null);
+    try {
+      const saved = await api.saveSubagentSettings(subagentSettings);
+      setSubagentSettings(saved);
+      const results = await api.migrateProjectSettings(migrationProjectIds);
+      const changed = results.filter((result) => result.updatedFiles.length > 0).length;
+      const failures = results.filter((result) => result.error);
+      setSettingsMessage(
+        `Settings saved. Migrated ${results.length - failures.length} of ${results.length} selected ${results.length === 1 ? "project" : "projects"}; ${changed} had file changes.`,
+      );
+      if (failures.length > 0) {
+        setError(failures.map((result) => `${result.projectName}: ${result.error}`).join(" "));
+      }
+    } catch (reason) {
+      setError(messageFrom(reason));
+    } finally {
+      setSettingsMigrating(false);
     }
   };
 
@@ -429,7 +455,7 @@ export default function App() {
     try {
       setSubagentSettings(await api.resetSubagentSettings());
       setSettingsPreview(null);
-      setSettingsMessage("Bundled subagent defaults restored.");
+      setSettingsMessage("Bundled Projector and subagent defaults restored.");
     } catch (reason) {
       setError(messageFrom(reason));
     } finally {
@@ -516,10 +542,15 @@ export default function App() {
               setSettingsPreview(null);
             }}
             onPreview={() => void previewSettings()}
+            onMigrate={() => void migrateSettings()}
+            onMigrationProjectIds={setMigrationProjectIds}
             onReset={() => void resetSettings()}
             onSave={(event) => void saveSettings(event)}
             preview={settingsPreview}
             saving={settingsSaving}
+            migrating={settingsMigrating}
+            migrationProjectIds={migrationProjectIds}
+            projects={projects}
             settings={subagentSettings}
           />
         ) : loading ? (
@@ -1037,26 +1068,36 @@ function SubagentSettingsPage({
   loading,
   message,
   onChange,
+  onMigrate,
+  onMigrationProjectIds,
   onPreview,
   onReset,
   onSave,
   preview,
+  projects,
   saving,
+  migrating,
+  migrationProjectIds,
   settings,
 }: {
   loading: boolean;
   message: string | null;
   onChange: (settings: SubagentSettings) => void;
+  onMigrate: () => void;
+  onMigrationProjectIds: (ids: string[]) => void;
   onPreview: () => void;
   onReset: () => void;
   onSave: (event: FormEvent<HTMLFormElement>) => void;
   preview: GeneratedSubagentFile[] | null;
+  projects: ProjectSummary[];
   saving: boolean;
+  migrating: boolean;
+  migrationProjectIds: string[];
   settings: SubagentSettings | null;
 }) {
   if (loading) return <CenteredMessage title="Loading settings…" />;
   if (!settings) {
-    return <CenteredMessage title="Subagent settings are unavailable" body="Review the error above and try again." />;
+    return <CenteredMessage title="Project settings are unavailable" body="Review the error above and try again." />;
   }
 
   const updateWorker = <K extends keyof SubagentSettings[WorkerKey]>(
@@ -1074,16 +1115,31 @@ function SubagentSettingsPage({
     <div className="settings-page">
       <header className="settings-header">
         <div>
-          <p className="eyebrow">Project creation</p>
-          <h2>Subagent defaults</h2>
-          <p>These settings are copied into newly created projects only. Existing projects are never updated.</p>
+          <p className="eyebrow">Project configuration</p>
+          <h2>Project settings</h2>
+          <p>New projects use these defaults. You can also explicitly migrate selected registered projects below.</p>
         </div>
       </header>
       <form className="settings-form" onSubmit={onSave}>
         {message && <div className="notice success" role="status">{message}</div>}
         <section className="panel settings-section">
+          <h3>Projector</h3>
+          <label htmlFor="projector-section">AGENTS.md Projector section</label>
+          <p>Edit the complete Markdown section. It must begin with <code>## Projector</code>.</p>
+          <textarea
+            id="projector-section"
+            maxLength={32_000}
+            onChange={(event) => onChange({ ...settings, projectorSection: event.target.value })}
+            required
+            rows={18}
+            value={settings.projectorSection}
+          />
+        </section>
+
+        <section className="panel settings-section">
+          <h3>Subagents</h3>
           <label htmlFor="subagents-section">AGENTS.md Subagents section</label>
-          <p>Edit the complete Markdown section. It must begin with <code>## Subagents</code>.</p>
+            <p>Edit the complete Markdown section. It must begin with <code>## Subagents</code>.</p>
           <textarea
             id="subagents-section"
             maxLength={32_000}
@@ -1156,15 +1212,58 @@ function SubagentSettingsPage({
 
         <div className="settings-actions">
           <button className="primary-button" disabled={saving} type="submit">
-            {saving ? "Saving…" : "Save new-project defaults"}
+            {saving ? "Saving…" : "Save settings"}
           </button>
           <button className="secondary-button" disabled={saving} onClick={onPreview} type="button">
             Preview generated files
           </button>
-          <button className="text-button" disabled={saving} onClick={onReset} type="button">
+            <button className="text-button" disabled={saving || migrating} onClick={onReset} type="button">
             Reset to bundled defaults
           </button>
         </div>
+
+        <section className="panel settings-section migration-settings" aria-label="Project migration">
+          <h3>Migrate registered projects</h3>
+          <p>Apply the current Projector section, Subagents section, and three worker TOMLs. Other AGENTS.md sections are preserved. Originals receive a <code>.projector-backup</code> before their first change.</p>
+          {projects.length === 0 ? (
+            <p>No registered projects are available.</p>
+          ) : (
+            <>
+              <label className="migration-project-option">
+                <input
+                  checked={migrationProjectIds.length === projects.length}
+                  onChange={(event) => onMigrationProjectIds(event.target.checked ? projects.map((project) => project.id) : [])}
+                  type="checkbox"
+                />
+                Select all registered projects
+              </label>
+              <div className="migration-project-list">
+                {projects.map((project) => (
+                  <label className="migration-project-option" key={project.id}>
+                    <input
+                      checked={migrationProjectIds.includes(project.id)}
+                      onChange={(event) => onMigrationProjectIds(
+                        event.target.checked
+                          ? [...migrationProjectIds, project.id]
+                          : migrationProjectIds.filter((id) => id !== project.id),
+                      )}
+                      type="checkbox"
+                    />
+                    <span><strong>{project.name}</strong><small>{project.path}</small></span>
+                  </label>
+                ))}
+              </div>
+              <button
+                className="secondary-button"
+                disabled={migrating || saving || migrationProjectIds.length === 0}
+                onClick={onMigrate}
+                type="button"
+              >
+                {migrating ? "Migrating…" : "Save and migrate selected"}
+              </button>
+            </>
+          )}
+        </section>
 
         {preview && (
           <section className="panel generated-preview" aria-label="Generated file preview">

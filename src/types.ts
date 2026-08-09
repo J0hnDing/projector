@@ -136,10 +136,18 @@ export interface WorkerAgentSettings {
 
 export interface SubagentSettings {
   version: number;
+  projectorSection: string;
   subagentsSection: string;
   workerLow: WorkerAgentSettings;
   workerMedium: WorkerAgentSettings;
   workerHigh: WorkerAgentSettings;
+}
+
+export interface SettingsMigrationResult {
+  projectId: string;
+  projectName: string;
+  updatedFiles: string[];
+  error: string | null;
 }
 
 export interface GeneratedSubagentFile {

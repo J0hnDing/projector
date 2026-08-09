@@ -23,7 +23,9 @@ use models::{
 };
 use project_state::ProjectStateService;
 use registry::RegistryStore;
-use subagent_settings::{GeneratedSubagentFile, SubagentSettings, SubagentSettingsStore};
+use subagent_settings::{
+    GeneratedSubagentFile, SettingsMigrationResult, SubagentSettings, SubagentSettingsStore,
+};
 use tauri::{AppHandle, Manager, State};
 use uuid::Uuid;
 use watcher::ProjectWatcher;
@@ -190,6 +192,54 @@ fn preview_subagent_files(
         .map_err(|_| "The subagent settings are unavailable".to_string())?
         .preview(&settings)
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn migrate_project_settings(
+    project_ids: Vec<Uuid>,
+    state: State<'_, AppState>,
+) -> Result<Vec<SettingsMigrationResult>, String> {
+    if project_ids.is_empty() {
+        return Err("Select at least one registered project to migrate".into());
+    }
+    let settings = state
+        .subagent_settings
+        .lock()
+        .map_err(|_| "The subagent settings are unavailable".to_string())?
+        .settings()
+        .clone();
+    let entries = {
+        let registry = state
+            .registry
+            .lock()
+            .map_err(|_| "The project registry is unavailable".to_string())?;
+        project_ids
+            .into_iter()
+            .map(|id| {
+                registry
+                    .find(id)
+                    .cloned()
+                    .ok_or_else(|| format!("Unknown registered project id {id}"))
+            })
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        entries
+            .iter()
+            .map(|entry| {
+                subagent_settings::migrate_project_settings(entry, &settings).unwrap_or_else(
+                    |error| SettingsMigrationResult {
+                        project_id: entry.id,
+                        project_name: entry.name.clone(),
+                        updated_files: Vec::new(),
+                        error: Some(error.to_string()),
+                    },
+                )
+            })
+            .collect::<Vec<_>>()
+    })
+    .await
+    .map_err(|error| format!("Unable to migrate project settings: {error}"))
 }
 
 #[tauri::command]
@@ -511,6 +561,7 @@ pub fn run() {
             save_subagent_settings,
             reset_subagent_settings,
             preview_subagent_files,
+            migrate_project_settings,
             list_codex_sessions,
             link_codex_session,
             unlink_codex_session

@@ -1,9 +1,16 @@
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::agent_instructions::new_project_agents;
+use crate::{
+    agent_instructions::{PROJECTOR_SECTION, migrate_agents, new_project_agents},
+    models::RegistryEntry,
+    project_state::atomic_replace,
+};
 
 const DEFAULT_SETTINGS: &str = include_str!("../resources/subagent-defaults.toml");
 const SETTINGS_VERSION: u8 = 1;
@@ -39,6 +46,12 @@ pub struct WorkerAgentSettings {
 #[serde(deny_unknown_fields)]
 pub struct SubagentSettings {
     pub version: u8,
+    #[serde(
+        rename = "projectorSection",
+        alias = "projector_section",
+        default = "default_projector_section"
+    )]
+    pub projector_section: String,
     #[serde(rename = "subagentsSection", alias = "subagents_section")]
     pub subagents_section: String,
     #[serde(rename = "workerLow", alias = "worker_low")]
@@ -54,6 +67,15 @@ pub struct SubagentSettings {
 pub struct GeneratedSubagentFile {
     pub path: String,
     pub content: String,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SettingsMigrationResult {
+    pub project_id: uuid::Uuid,
+    pub project_name: String,
+    pub updated_files: Vec<String>,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Error)]
@@ -134,7 +156,11 @@ impl SubagentSettings {
     ) -> Result<Vec<GeneratedSubagentFile>, SubagentSettingsError> {
         let mut files = vec![GeneratedSubagentFile {
             path: "AGENTS.md".into(),
-            content: new_project_agents(project_name, &self.subagents_section),
+            content: new_project_agents(
+                project_name,
+                &self.subagents_section,
+                &self.projector_section,
+            ),
         }];
         for worker in [&self.worker_low, &self.worker_medium, &self.worker_high] {
             files.push(GeneratedSubagentFile {
@@ -144,6 +170,122 @@ impl SubagentSettings {
         }
         Ok(files)
     }
+}
+
+pub fn migrate_project_settings(
+    entry: &RegistryEntry,
+    settings: &SubagentSettings,
+) -> Result<SettingsMigrationResult, SubagentSettingsError> {
+    let root = entry.path.canonicalize()?;
+    if root != entry.path || !root.is_dir() {
+        return Err(SubagentSettingsError::Validation(format!(
+            "{} no longer resolves to its registered project directory",
+            entry.name
+        )));
+    }
+
+    let generated = settings.generated_files(&entry.name)?;
+    let mut updates = Vec::new();
+    for file in generated {
+        let path = root.join(&file.path);
+        validate_managed_path(&root, &path)?;
+        let original = match fs::read(&path) {
+            Ok(bytes) => Some(bytes),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.into()),
+        };
+        let content = if file.path == "AGENTS.md" {
+            let existing = original
+                .as_ref()
+                .map(|bytes| String::from_utf8(bytes.clone()))
+                .transpose()
+                .map_err(|_| {
+                    SubagentSettingsError::Validation(
+                        "AGENTS.md is not valid UTF-8 and was not changed".into(),
+                    )
+                })?;
+            migrate_agents(
+                existing.as_deref(),
+                &entry.name,
+                &settings.subagents_section,
+                &settings.projector_section,
+            )
+        } else {
+            file.content
+        };
+        if original.as_deref() != Some(content.as_bytes()) {
+            updates.push((file.path, path, original, content.into_bytes()));
+        }
+    }
+
+    for (_, path, original, _) in &updates {
+        if original.is_some() {
+            let backup = backup_path(path);
+            validate_managed_path(&root, &backup)?;
+            if !backup.exists() {
+                fs::copy(path, backup)?;
+            }
+        }
+    }
+
+    for (_, path, _, _) in &updates {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+    }
+
+    let mut applied: Vec<(String, PathBuf, Option<Vec<u8>>)> = Vec::new();
+    for (relative, path, original, content) in &updates {
+        if let Err(error) = atomic_replace(path, content) {
+            for (_, applied_path, applied_original) in applied.into_iter().rev() {
+                match applied_original {
+                    Some(bytes) => {
+                        let _ = atomic_replace(&applied_path, &bytes);
+                    }
+                    None => {
+                        let _ = fs::remove_file(&applied_path);
+                    }
+                }
+            }
+            return Err(error.into());
+        }
+        applied.push((relative.clone(), path.clone(), original.clone()));
+    }
+
+    Ok(SettingsMigrationResult {
+        project_id: entry.id,
+        project_name: entry.name.clone(),
+        updated_files: updates.into_iter().map(|(relative, ..)| relative).collect(),
+        error: None,
+    })
+}
+
+fn validate_managed_path(root: &Path, path: &Path) -> Result<(), SubagentSettingsError> {
+    let mut ancestor = path;
+    while !ancestor.exists() {
+        ancestor = ancestor.parent().ok_or_else(|| {
+            SubagentSettingsError::Validation("managed path has no existing parent".into())
+        })?;
+    }
+    let canonical = ancestor.canonicalize()?;
+    if !canonical.starts_with(root) {
+        return Err(SubagentSettingsError::Validation(
+            "a managed settings path resolves outside the registered project directory".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn backup_path(path: &Path) -> PathBuf {
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("settings");
+    path.with_file_name(format!("{name}.projector-backup"))
+}
+
+fn default_projector_section() -> String {
+    PROJECTOR_SECTION.to_string()
 }
 
 pub fn bundled_defaults() -> Result<SubagentSettings, SubagentSettingsError> {
@@ -171,6 +313,17 @@ fn validate_settings(
     if section.len() > 32_000 {
         return Err(SubagentSettingsError::Validation(
             "the AGENTS.md subagent guidance is too large".into(),
+        ));
+    }
+    let projector_section = settings.projector_section.trim();
+    if !projector_section.starts_with("## Projector") {
+        return Err(SubagentSettingsError::Validation(
+            "the AGENTS.md Projector guidance must begin with `## Projector`".into(),
+        ));
+    }
+    if projector_section.len() > 32_000 {
+        return Err(SubagentSettingsError::Validation(
+            "the AGENTS.md Projector guidance is too large".into(),
         ));
     }
     validate_worker("worker_low", &settings.worker_low, &defaults.worker_low)?;
@@ -267,11 +420,14 @@ fn render_worker(worker: &WorkerAgentSettings) -> Result<String, toml::ser::Erro
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Utc;
+    use uuid::Uuid;
 
     #[test]
     fn bundled_defaults_define_the_requested_worker_tiers() {
         let settings = bundled_defaults().unwrap();
 
+        assert_eq!(settings.projector_section.trim(), PROJECTOR_SECTION.trim());
         assert!(settings.subagents_section.contains(
             "Use the built-in `explorer` for independent, read-only codebase investigation."
         ));
@@ -290,6 +446,86 @@ mod tests {
             settings.worker_high.model_reasoning_effort,
             ReasoningEffort::High
         );
+    }
+
+    #[test]
+    fn saved_version_one_settings_without_projector_section_are_upgraded() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("subagent-settings.json");
+        let mut value = serde_json::to_value(bundled_defaults().unwrap()).unwrap();
+        value.as_object_mut().unwrap().remove("projectorSection");
+        fs::write(&path, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+
+        let store = SubagentSettingsStore::load(path).unwrap();
+
+        assert_eq!(store.settings().projector_section, PROJECTOR_SECTION);
+    }
+
+    #[test]
+    fn migration_updates_only_managed_files_and_is_idempotent() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().join("Example");
+        fs::create_dir(&project).unwrap();
+        fs::write(
+            project.join("AGENTS.md"),
+            "# Existing\n\n## Keep\n\nUntouched.\n\n## Subagents\n\nOld.\n\n## Projector\n\nOld.\n",
+        )
+        .unwrap();
+        fs::create_dir_all(project.join(".codex/agents")).unwrap();
+        fs::write(project.join(".codex/agents/worker-low.toml"), "old").unwrap();
+        let entry = RegistryEntry {
+            id: Uuid::new_v4(),
+            name: "Example".into(),
+            path: project.canonicalize().unwrap(),
+            registered_at: Utc::now(),
+            last_opened: None,
+        };
+        let mut settings = bundled_defaults().unwrap();
+        settings.projector_section = "## Projector\n\nCustom API guidance.".into();
+        settings.subagents_section = "## Subagents\n\nCustom worker guidance.".into();
+
+        let first = migrate_project_settings(&entry, &settings).unwrap();
+        assert_eq!(first.updated_files.len(), 4);
+        let agents = fs::read_to_string(project.join("AGENTS.md")).unwrap();
+        assert!(agents.contains("## Keep\n\nUntouched."));
+        assert!(agents.contains("Custom API guidance."));
+        assert!(agents.contains("Custom worker guidance."));
+        assert!(project.join("AGENTS.md.projector-backup").exists());
+        assert!(
+            project
+                .join(".codex/agents/worker-low.toml.projector-backup")
+                .exists()
+        );
+        assert!(
+            !project
+                .join(".codex/agents/worker-medium.toml.projector-backup")
+                .exists()
+        );
+
+        let second = migrate_project_settings(&entry, &settings).unwrap();
+        assert!(second.updated_files.is_empty());
+    }
+
+    #[test]
+    fn migration_rejects_non_utf8_agents_without_changing_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().join("Binary");
+        fs::create_dir(&project).unwrap();
+        let original = vec![0xff, 0xfe, 0xfd];
+        fs::write(project.join("AGENTS.md"), &original).unwrap();
+        let entry = RegistryEntry {
+            id: Uuid::new_v4(),
+            name: "Binary".into(),
+            path: project.canonicalize().unwrap(),
+            registered_at: Utc::now(),
+            last_opened: None,
+        };
+
+        let error = migrate_project_settings(&entry, &bundled_defaults().unwrap()).unwrap_err();
+
+        assert!(error.to_string().contains("not valid UTF-8"));
+        assert_eq!(fs::read(project.join("AGENTS.md")).unwrap(), original);
+        assert!(!project.join("AGENTS.md.projector-backup").exists());
     }
 
     #[test]

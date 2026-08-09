@@ -5,7 +5,7 @@ Projector is a lightweight local desktop project manager shared by people and so
 ## MVP capabilities
 
 - Create Projector-ready project folders or register existing local project directories. New projects receive `README.md`, `AGENTS.md`, `TODO.md`, `WORK_HISTORY.md`, and three project-scoped Codex worker configurations under `.codex/agents/`, with an enabled-by-default option to initialize a Git repository; removing a project only removes its registry entry.
-- Configure the AGENTS.md subagent guidance and each new project's worker model, reasoning effort, description, and developer instructions from a global Settings page. Settings are creation-time defaults and never rewrite existing projects.
+- Configure separate Projector and Subagents sections for `AGENTS.md`, plus worker models, reasoning effort, descriptions, and developer instructions, from the global Settings page. New projects use these defaults, and users can explicitly apply them to selected or all registered projects.
 - Show project name, path, Git branch, clean/dirty state, upstream relationship, last successful fetch, last repository activity, and last-opened time.
 - Render `README.md`, `TODO.md`, and work history (`WORK_HISTORY.md` or `WORKING_HISTORY.md`) from either the project root or `docs/`, using case-insensitive filename matching.
 - Parse TODOs and working history into validated structured records while preserving malformed or unrecognized source text.
@@ -125,7 +125,9 @@ Only `session_id`, `cwd`, `agent_id`, `agent_type`, receipt timestamps, and deri
 
 ## Project migration
 
-Run the bounded migration from the Projector repository:
+The Settings page can migrate the current Projector section, Subagents section, and `.codex/agents/worker-{low,medium,high}.toml` files into selected registered projects or all registered projects. It preserves unrelated `AGENTS.md` sections, creates adjacent `.projector-backup` files before the first overwrite of an existing managed file, and refuses managed paths that resolve outside the registered project root.
+
+The separate legacy project-state migration remains available from the Projector repository:
 
 ```powershell
 cargo run --manifest-path src-tauri/Cargo.toml --bin projector-migrate
@@ -150,9 +152,9 @@ Missing files are shown as missing. A document path that resolves outside the re
 
 ## Local data and access
 
-The application stores `registered-projects.json` in the operating system application-data directory for the `com.local.projector` identifier. It contains only registry version, project ID, canonical location, display name, registration time, and last-opened time. A separate `git-sync-cache.json` stores only the last successful fetch time per project. Pending review proposals are stored in `completion-proposals.json`; each contains its kind, registered project ID, proposed history entry, request time, and, for TODO completion, the TODO snapshot needed for stale-proposal validation. User-edited new-project subagent defaults are stored as preferences in `subagent-settings.json`; removing that override restores the bundled static defaults. Opt-in Codex lifecycle metadata and manual project links are stored in `codex-sessions.json` using the bounded, content-free contract above. This explicitly permitted internal storage lets preferences, reviews, and monitoring links survive restarts. Other project content and Git history are not copied into application storage.
+The application stores `registered-projects.json` in the operating system application-data directory for the `com.local.projector` identifier. It contains only registry version, project ID, canonical location, display name, registration time, and last-opened time. A separate `git-sync-cache.json` stores only the last successful fetch time per project. Pending review proposals are stored in `completion-proposals.json`; each contains its kind, registered project ID, proposed history entry, request time, and, for TODO completion, the TODO snapshot needed for stale-proposal validation. User-edited Projector and subagent defaults are stored as preferences in `subagent-settings.json`; removing that override restores the bundled static defaults. Opt-in Codex lifecycle metadata and manual project links are stored in `codex-sessions.json` using the bounded, content-free contract above. This explicitly permitted internal storage lets preferences, reviews, and monitoring links survive restarts. Other project content and Git history are not copied into application storage.
 
-Filesystem observation is created only for registered roots. Project creation accepts a user-selected parent folder and a validated single folder name, creates a minimal README and Projector state documents, snapshots the effective static-or-user-edited subagent configuration into `AGENTS.md` and `.codex/agents/`, and can initialize in-root Git metadata through libgit2. Existing projects are never migrated or rewritten when defaults change. Git initialization uses the configured `init.defaultBranch` when valid and otherwise uses `main`; it creates neither a commit nor a remote. After creation and registration, document and Git requests, including pull, use the registered project ID. Git worktrees whose `.git` metadata resolves outside the registered root are intentionally not inspected in the MVP.
+Filesystem observation is created only for registered roots. Project creation accepts a user-selected parent folder and a validated single folder name, creates a minimal README and Projector state documents, snapshots the effective static-or-user-edited Projector and subagent configuration into `AGENTS.md` and `.codex/agents/`, and can initialize in-root Git metadata through libgit2. Existing projects change only through the explicit, selection-based Settings migration action. Git initialization uses the configured `init.defaultBranch` when valid and otherwise uses `main`; it creates neither a commit nor a remote. After creation and registration, document and Git requests, including pull, use the registered project ID. Git worktrees whose `.git` metadata resolves outside the registered root are intentionally not inspected in the MVP.
 
 ## Development
 

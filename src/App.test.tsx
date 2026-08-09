@@ -20,6 +20,7 @@ vi.mock("./api", () => ({
   saveSubagentSettings: vi.fn(),
   resetSubagentSettings: vi.fn(),
   previewSubagentFiles: vi.fn(),
+  migrateProjectSettings: vi.fn(),
   listCodexSessions: vi.fn(),
   linkCodexSession: vi.fn(),
   unlinkCodexSession: vi.fn(),
@@ -128,6 +129,7 @@ const workHistoryProposal: CompletionProposal = {
 
 const subagentSettings: SubagentSettings = {
   version: 1,
+  projectorSection: "## Projector\n\nUse the local Projector API.",
   subagentsSection: "## Subagents\n\nUse the lowest capable worker tier.",
   workerLow: {
     fileName: "worker-low.toml",
@@ -224,6 +226,7 @@ describe("App", () => {
     vi.mocked(api.saveSubagentSettings).mockReset();
     vi.mocked(api.resetSubagentSettings).mockReset();
     vi.mocked(api.previewSubagentFiles).mockReset();
+    vi.mocked(api.migrateProjectSettings).mockReset();
     vi.mocked(api.listCodexSessions).mockReset();
     vi.mocked(api.linkCodexSession).mockReset();
     vi.mocked(api.unlinkCodexSession).mockReset();
@@ -239,6 +242,7 @@ describe("App", () => {
       { path: ".codex/agents/worker-medium.toml", content: 'name = "worker_medium"' },
       { path: ".codex/agents/worker-high.toml", content: 'name = "worker_high"' },
     ]);
+    vi.mocked(api.migrateProjectSettings).mockResolvedValue([]);
     vi.mocked(api.listCodexSessions).mockResolvedValue({ detectedSessions: [], linkedSessions: [] });
     vi.mocked(api.linkCodexSession).mockResolvedValue(linkedCodexMonitoring);
     vi.mocked(api.unlinkCodexSession).mockResolvedValue(detectedCodexMonitoring);
@@ -313,11 +317,12 @@ describe("App", () => {
     await waitFor(() => expect(api.createProject).toHaveBeenCalledWith("C:\\code", "Example", false));
   });
 
-  it("edits and saves subagent defaults for future projects", async () => {
+  it("edits and saves separate Projector and subagent settings", async () => {
     render(<App />);
 
     await userEvent.click(screen.getByRole("button", { name: "Settings" }));
-    expect(await screen.findByRole("heading", { name: "Subagent defaults" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Project settings" })).toBeInTheDocument();
+    expect(screen.getByLabelText("AGENTS.md Projector section")).toHaveValue(subagentSettings.projectorSection);
     expect(screen.getByLabelText("Worker low model")).toHaveValue("gpt-5.6-luna");
     expect(screen.getByLabelText("Worker low reasoning effort")).toHaveValue("medium");
     expect(screen.getByLabelText("Worker medium reasoning effort")).toHaveValue("max");
@@ -325,20 +330,23 @@ describe("App", () => {
     await userEvent.clear(screen.getByLabelText("Worker low description"));
     await userEvent.type(screen.getByLabelText("Worker low description"), "Edited low worker.");
     await userEvent.selectOptions(screen.getByLabelText("Worker high reasoning effort"), "xhigh");
-    await userEvent.click(screen.getByRole("button", { name: "Save new-project defaults" }));
+    await userEvent.clear(screen.getByLabelText("AGENTS.md Projector section"));
+    await userEvent.type(screen.getByLabelText("AGENTS.md Projector section"), "## Projector\n\nEdited API guidance.");
+    await userEvent.click(screen.getByRole("button", { name: "Save settings" }));
 
     await waitFor(() => expect(api.saveSubagentSettings).toHaveBeenCalledWith(expect.objectContaining({
+      projectorSection: "## Projector\n\nEdited API guidance.",
       workerLow: expect.objectContaining({ description: "Edited low worker." }),
       workerHigh: expect.objectContaining({ modelReasoningEffort: "xhigh" }),
     })));
-    expect(await screen.findByRole("status")).toHaveTextContent("New-project subagent defaults saved.");
+    expect(await screen.findByRole("status")).toHaveTextContent("Project and subagent settings saved.");
   });
 
   it("previews generated files and resets bundled defaults", async () => {
     render(<App />);
 
     await userEvent.click(screen.getByRole("button", { name: "Settings" }));
-    await screen.findByRole("heading", { name: "Subagent defaults" });
+    await screen.findByRole("heading", { name: "Project settings" });
     await userEvent.click(screen.getByRole("button", { name: "Preview generated files" }));
 
     const preview = await screen.findByLabelText("Generated file preview");
@@ -346,7 +354,29 @@ describe("App", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Reset to bundled defaults" }));
     await waitFor(() => expect(api.resetSubagentSettings).toHaveBeenCalledOnce());
-    expect(await screen.findByRole("status")).toHaveTextContent("Bundled subagent defaults restored.");
+    expect(await screen.findByRole("status")).toHaveTextContent("Bundled Projector and subagent defaults restored.");
+  });
+
+  it("saves and migrates selected registered projects", async () => {
+    vi.mocked(api.listProjects).mockResolvedValue([detail.project]);
+    vi.mocked(api.openProject).mockResolvedValue(detail);
+    vi.mocked(api.migrateProjectSettings).mockResolvedValue([{
+      projectId: detail.project.id,
+      projectName: detail.project.name,
+      updatedFiles: ["AGENTS.md", ".codex/agents/worker-low.toml"],
+      error: null,
+    }]);
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "Example" });
+    await userEvent.click(screen.getByRole("button", { name: "Settings" }));
+    await screen.findByRole("heading", { name: "Project settings" });
+    await userEvent.click(screen.getByRole("checkbox", { name: /Example/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Save and migrate selected" }));
+
+    await waitFor(() => expect(api.saveSubagentSettings).toHaveBeenCalledWith(subagentSettings));
+    expect(api.migrateProjectSettings).toHaveBeenCalledWith([detail.project.id]);
+    expect(await screen.findByRole("status")).toHaveTextContent("Migrated 1 of 1 selected project; 1 had file changes.");
   });
 
   it("starts background Git synchronization on manual refresh", async () => {

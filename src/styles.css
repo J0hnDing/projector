@@ -234,6 +234,7 @@ button:focus-visible { outline: 3px solid rgba(44, 106, 79, .28); outline-offset
 .settings-form { display: flex; flex-direction: column; gap: 18px; }
 .settings-section > label, .worker-settings-card label { display: flex; flex-direction: column; gap: 7px; color: #555b56; font-size: 12px; font-weight: 650; }
 .settings-section > p { margin: 5px 0 14px; color: #7b807b; font-size: 12px; }
+.settings-section h3 { margin: 0 0 14px; font-family: Georgia, serif; font-size: 20px; font-weight: 600; }
 .settings-form textarea, .settings-form input, .settings-form select { box-sizing: border-box; width: 100%; min-width: 0; padding: 9px 10px; color: #252925; background: #fff; border: 1px solid #d8d8d3; border-radius: 7px; font: inherit; font-size: 12px; line-height: 1.5; }
 .settings-form textarea { resize: vertical; }
 .settings-section textarea, .worker-settings-card textarea:last-of-type { font-family: "Cascadia Code", Consolas, monospace; }
@@ -249,6 +250,14 @@ button:focus-visible { outline: 3px solid rgba(44, 106, 79, .28); outline-offset
 .generated-preview details { border: 1px solid #e2dfd8; border-radius: 8px; }
 .generated-preview summary { padding: 10px 12px; cursor: pointer; font-family: "Cascadia Code", Consolas, monospace; font-size: 11px; font-weight: 650; }
 .generated-preview pre { max-height: 440px; margin: 0; padding: 14px; overflow: auto; background: #f8f7f3; border-top: 1px solid #e2dfd8; font-size: 11px; line-height: 1.5; white-space: pre-wrap; }
+.migration-settings { display: flex; flex-direction: column; align-items: flex-start; }
+.migration-project-list { box-sizing: border-box; width: 100%; margin: 10px 0 16px; border: 1px solid #e2dfd8; border-radius: 8px; }
+.migration-project-option { display: flex !important; flex-direction: row !important; align-items: flex-start; gap: 10px !important; width: 100%; padding: 10px 0; color: #404640 !important; cursor: pointer; }
+.migration-project-list .migration-project-option { box-sizing: border-box; padding: 10px 12px; border-bottom: 1px solid #ece9e3; }
+.migration-project-list .migration-project-option:last-child { border-bottom: 0; }
+.migration-project-option input { width: 16px; min-width: 16px; margin-top: 2px; accent-color: #24583f; }
+.migration-project-option span { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
+.migration-project-option small { overflow: hidden; color: #7b807b; font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
 .fact-grid.panel.compact { padding: 18px 22px; grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .commits-panel { padding-bottom: 8px; }
 .commit-list { margin: 0; padding: 0; list-style: none; }

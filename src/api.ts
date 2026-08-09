@@ -8,6 +8,7 @@ import type {
   GeneratedSubagentFile,
   ProjectDetail,
   ProjectSummary,
+  SettingsMigrationResult,
   SubagentSettings,
 } from "./types";
 
@@ -37,6 +38,10 @@ export function resetSubagentSettings(): Promise<SubagentSettings> {
 
 export function previewSubagentFiles(settings: SubagentSettings): Promise<GeneratedSubagentFile[]> {
   return invoke("preview_subagent_files", { settings });
+}
+
+export function migrateProjectSettings(projectIds: string[]): Promise<SettingsMigrationResult[]> {
+  return invoke("migrate_project_settings", { projectIds });
 }
 
 export function listCodexSessions(id: string): Promise<CodexMonitoringSnapshot> {
