@@ -169,3 +169,16 @@ Added an opt-in Codex Desktop lifecycle-hook integration with bounded content-fr
 ### Limitations
 
 Lifecycle hooks expose only running, stopped, or unknown facts. Events missed while Projector is closed are not replayed, and waiting, successful completion, and failure are not inferred. Hook setup and session linking remain manual.
+
+## 2026-08-09 12:44 — Added settings-driven project migration
+
+- Category: feature
+- Area: settings
+
+### Summary
+
+Added an editable Projector AGENTS.md section separate from Subagents settings, kept both as new-project defaults, and added explicit selected-or-all migration for managed AGENTS.md sections and worker TOMLs with registered-root validation, backups, per-project results, and tests.
+
+### Limitations
+
+Migration manages only the Projector and Subagents sections plus worker-low.toml, worker-medium.toml, and worker-high.toml; other AGENTS.md content is preserved.

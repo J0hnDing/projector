@@ -38,9 +38,15 @@ The main agent may spawn multiple instances of the same worker role. Run workers
 in parallel only when their tasks are independent and their file ownership does
 not overlap.
 
+When delegating, always select an explicit worker tier. Never use default worker. Never omit agent_type; if unsure, use worker_medium.
+
 Give each worker a clear objective, scope, constraints, acceptance criteria,
 and owned files. Workers must report work completed, files changed, validation
 run, assumptions, blockers, and remaining risks.
+
+For work that creates or changes an interface, define the expected inputs,
+outputs, error behavior, and API or data-schema contract in the task and
+acceptance criteria before delegation.
 
 The main agent owns decomposition, architecture, worker selection, integration,
 diff review, conflict resolution, final testing, and the final response.

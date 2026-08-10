@@ -431,6 +431,9 @@ mod tests {
         assert!(settings.subagents_section.contains(
             "Use the built-in `explorer` for independent, read-only codebase investigation."
         ));
+        assert!(settings.subagents_section.contains(
+            "For work that creates or changes an interface, define the expected inputs,"
+        ));
         assert_eq!(settings.worker_low.model, "gpt-5.6-luna");
         assert_eq!(
             settings.worker_low.model_reasoning_effort,
