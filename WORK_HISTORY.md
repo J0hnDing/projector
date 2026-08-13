@@ -182,3 +182,29 @@ Added an editable Projector AGENTS.md section separate from Subagents settings, 
 ### Limitations
 
 Migration manages only the Projector and Subagents sections plus worker-low.toml, worker-medium.toml, and worker-high.toml; other AGENTS.md content is preserved.
+
+## 2026-08-12 18:59 — Startup links open in the default browser
+
+- Category: feature
+- Area: project-documents
+
+### Summary
+
+Installed the Tauri opener plugin and routed HTTP and HTTPS links from STARTUP.md through a validated desktop command to the system default browser.
+
+### Limitations
+
+Only credential-free HTTP and HTTPS links in the Startup tab are opened externally.
+
+## 2026-08-12 18:01 — Startup instructions tab
+
+- Category: feature
+- Area: project-documents
+
+### Summary
+
+Added a concise Startup tab that safely renders project-owned STARTUP.md content, discovers it from the project root or docs directory, and includes it in new-project initialization.
+
+### Limitations
+
+Existing projects must add STARTUP.md to the project root or docs directory.

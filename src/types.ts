@@ -45,6 +45,7 @@ export interface ProjectDocument {
 
 export interface ProjectDocuments {
   readme: ProjectDocument;
+  startup: ProjectDocument;
   todo: ProjectDocument;
   workingHistory: ProjectDocument;
 }

@@ -32,9 +32,13 @@ button:focus-visible { outline: 3px solid rgba(44, 106, 79, .28); outline-offset
 .create-project-note { margin: 0; color: #7b807b; font-size: 12px; line-height: 1.5; }
 .project-count { margin: 24px 7px 9px; color: #727871; font-size: 12px; font-weight: 650; text-transform: uppercase; letter-spacing: .07em; }
 .project-list { display: flex; flex: 1; flex-direction: column; gap: 5px; min-height: 0; overflow-y: auto; }
-.project-list-item { display: flex; flex-direction: column; align-items: stretch; width: 100%; padding: 13px 12px; text-align: left; color: inherit; background: transparent; border: 1px solid transparent; border-radius: 11px; cursor: pointer; }
+.project-list-item { display: flex; align-items: center; width: 100%; color: inherit; background: transparent; border: 1px solid transparent; border-radius: 11px; }
 .project-list-item:hover { background: rgba(255,255,255,.5); }
 .project-list-item.selected { background: #fff; border-color: #ddd9cf; box-shadow: 0 3px 12px rgba(45,48,44,.05); }
+.project-list-select { display: flex; flex: 1; flex-direction: column; min-width: 0; padding: 13px 6px 13px 12px; text-align: left; color: inherit; background: transparent; border: 0; cursor: pointer; }
+.project-folder-button { display: grid; flex: 0 0 auto; width: 30px; height: 30px; margin-right: 7px; padding: 6px; place-items: center; color: #69716b; background: transparent; border: 0; border-radius: 7px; cursor: pointer; }
+.project-folder-button:hover { color: #1f5139; background: rgba(36,88,63,.1); }
+.project-folder-button svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; }
 .project-list-name { font-size: 14px; font-weight: 730; }
 .project-list-path { margin-top: 4px; overflow: hidden; color: #7a7e79; font-family: "Cascadia Code", Consolas, monospace; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .project-list-meta { display: flex; align-items: center; gap: 6px; margin-top: 10px; color: #6e746f; font-size: 11px; }
@@ -101,6 +105,10 @@ button:focus-visible { outline: 3px solid rgba(44, 106, 79, .28); outline-offset
 .markdown-body code { padding: 2px 5px; background: #f0efeb; border-radius: 4px; font-family: "Cascadia Code", Consolas, monospace; font-size: .83em; }
 .markdown-body pre { padding: 16px; overflow: auto; background: #202722; border-radius: 8px; color: #e8eee9; }
 .markdown-body pre code { padding: 0; background: transparent; }
+.powershell-block { position: relative; }
+.code-copy-button { position: absolute; top: 8px; right: 8px; padding: 4px 8px; color: #dfe8e1; background: #354039; border: 1px solid #556159; border-radius: 5px; cursor: pointer; font-size: 10px; }
+.code-copy-button:hover { background: #445148; }
+.powershell-block pre { padding-right: 72px; }
 .markdown-body table { width: 100%; border-collapse: collapse; font-family: ui-sans-serif, system-ui, sans-serif; font-size: 13px; }
 .markdown-body th, .markdown-body td { padding: 8px 10px; border: 1px solid #ddd9d0; text-align: left; }
 .markdown-body blockquote { margin-left: 0; padding-left: 18px; color: #646b65; border-left: 3px solid #c7d5ca; }

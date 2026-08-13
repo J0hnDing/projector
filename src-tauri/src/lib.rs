@@ -27,6 +27,7 @@ use subagent_settings::{
     GeneratedSubagentFile, SettingsMigrationResult, SubagentSettings, SubagentSettingsStore,
 };
 use tauri::{AppHandle, Manager, State};
+use tauri_plugin_opener::OpenerExt;
 use uuid::Uuid;
 use watcher::ProjectWatcher;
 
@@ -471,6 +472,36 @@ async fn add_work_history(
         .map_err(|error| error.to_string())
 }
 
+#[tauri::command]
+fn open_external_url(url: String, app: AppHandle) -> Result<(), String> {
+    let url = validate_external_url(&url)?;
+    app.opener()
+        .open_url(url.as_str(), None::<&str>)
+        .map_err(|error| format!("Unable to open the link in the default browser: {error}"))
+}
+
+#[tauri::command]
+fn open_project_root(id: Uuid, app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    let root = registered_root(id, &state)?;
+    app.opener()
+        .open_path(root.to_string_lossy().into_owned(), None::<&str>)
+        .map_err(|error| format!("Unable to open the project folder: {error}"))
+}
+
+fn validate_external_url(raw: &str) -> Result<tauri::Url, String> {
+    let url = tauri::Url::parse(raw).map_err(|_| "The link is not a valid URL".to_string())?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err("Only HTTP and HTTPS links can be opened externally".to_string());
+    }
+    if url.host_str().is_none() {
+        return Err("The link must include a host".to_string());
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err("Links containing embedded credentials are not supported".to_string());
+    }
+    Ok(url)
+}
+
 fn registered_root(id: Uuid, state: &State<'_, AppState>) -> Result<PathBuf, String> {
     state
         .registry
@@ -496,6 +527,7 @@ fn detail_with_pending(
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let registry_path = app.path().app_data_dir()?.join("registered-projects.json");
             let sync_cache_path = app.path().app_data_dir()?.join("git-sync-cache.json");
@@ -564,8 +596,25 @@ pub fn run() {
             migrate_project_settings,
             list_codex_sessions,
             link_codex_session,
-            unlink_codex_session
+            unlink_codex_session,
+            open_external_url,
+            open_project_root
         ])
         .run(tauri::generate_context!())
         .expect("error while running Projector");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_external_url;
+
+    #[test]
+    fn external_urls_are_limited_to_credential_free_http_and_https() {
+        assert!(validate_external_url("https://example.com/start?mode=dev#ready").is_ok());
+        assert!(validate_external_url("http://127.0.0.1:4817").is_ok());
+        assert!(validate_external_url("file:///C:/Windows/System32/calc.exe").is_err());
+        assert!(validate_external_url("javascript:alert(1)").is_err());
+        assert!(validate_external_url("https://user:secret@example.com").is_err());
+        assert!(validate_external_url("not a URL").is_err());
+    }
 }

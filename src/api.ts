@@ -76,6 +76,14 @@ export function pullProject(id: string): Promise<ProjectDetail> {
   return invoke("pull_project", { id });
 }
 
+export function openExternalUrl(url: string): Promise<void> {
+  return invoke("open_external_url", { url });
+}
+
+export function openProjectRoot(id: string): Promise<void> {
+  return invoke("open_project_root", { id });
+}
+
 export function approveCompletion(id: string, proposalId: string): Promise<void> {
   return invoke("approve_completion", { id, proposalId });
 }

@@ -57,6 +57,7 @@ Rust models serialize with camel-case field names. Keep `src/types.ts`, Tauri co
 Recognize filenames case-insensitively with project-root precedence over `docs/`:
 
 - `README.md`
+- `STARTUP.md`
 - `TODO.md`
 - `WORK_HISTORY.md`
 - `WORKING_HISTORY.md`

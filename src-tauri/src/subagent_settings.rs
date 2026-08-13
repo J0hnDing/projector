@@ -427,7 +427,10 @@ mod tests {
     fn bundled_defaults_define_the_requested_worker_tiers() {
         let settings = bundled_defaults().unwrap();
 
-        assert_eq!(settings.projector_section.trim(), PROJECTOR_SECTION.trim());
+        assert_eq!(
+            settings.projector_section.replace("\r\n", "\n").trim(),
+            PROJECTOR_SECTION.replace("\r\n", "\n").trim()
+        );
         assert!(settings.subagents_section.contains(
             "Use the built-in `explorer` for independent, read-only codebase investigation."
         ));

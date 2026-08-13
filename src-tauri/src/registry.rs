@@ -129,6 +129,10 @@ impl RegistryStore {
                 &project.join("README.md"),
                 format!("# {name}\n\nDescribe the project here.\n").as_bytes(),
             )?;
+            write_new_file(
+                &project.join("STARTUP.md"),
+                b"# Startup\n\nDocument the commands and setup instructions needed to start this project.\n",
+            )?;
             for file in subagent_settings.generated_files(&name)? {
                 let path = project.join(file.path);
                 if let Some(parent) = path.parent() {
@@ -314,6 +318,10 @@ mod tests {
             "# New Project\n\nDescribe the project here.\n"
         );
         assert_eq!(fs::read_to_string(entry.path.join("TODO.md")).unwrap(), "");
+        assert_eq!(
+            fs::read_to_string(entry.path.join("STARTUP.md")).unwrap(),
+            "# Startup\n\nDocument the commands and setup instructions needed to start this project.\n"
+        );
         assert_eq!(
             fs::read_to_string(entry.path.join("WORK_HISTORY.md")).unwrap(),
             ""

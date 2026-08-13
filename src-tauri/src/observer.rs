@@ -65,6 +65,7 @@ pub fn detail(entry: &RegistryEntry, fetch: &GitFetchSnapshot) -> ProjectDetail 
 pub fn observe_documents(root: &Path) -> ProjectDocuments {
     ProjectDocuments {
         readme: read_document(root, "README.md", &["README.md"]),
+        startup: read_document(root, "STARTUP.md", &["STARTUP.md"]),
         todo: read_document(root, "TODO.md", &["TODO.md"]),
         working_history: read_document(
             root,
@@ -518,11 +519,28 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         fs::create_dir(temp.path().join("docs")).unwrap();
         fs::write(temp.path().join("README.md"), "# Root readme").unwrap();
+        fs::write(
+            temp.path().join("docs/STARTUP.md"),
+            "# Startup\n\n```powershell\nnpm run dev\n```",
+        )
+        .unwrap();
         fs::write(temp.path().join("docs/TODO.md"), "- [ ] Ship").unwrap();
 
         let documents = observe_documents(temp.path());
         assert_eq!(documents.readme.relative_path.as_deref(), Some("README.md"));
         assert_eq!(documents.readme.content.as_deref(), Some("# Root readme"));
+        assert_eq!(
+            documents.startup.relative_path.as_deref(),
+            Some("docs/STARTUP.md")
+        );
+        assert!(
+            documents
+                .startup
+                .content
+                .as_deref()
+                .unwrap()
+                .contains("npm run dev")
+        );
         assert_eq!(
             documents.todo.relative_path.as_deref(),
             Some("docs/TODO.md")
@@ -535,6 +553,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         fs::create_dir(temp.path().join("docs")).unwrap();
         fs::write(temp.path().join("readme.md"), "# Lowercase readme").unwrap();
+        fs::write(temp.path().join("startup.md"), "# Startup").unwrap();
         fs::write(
             temp.path().join("docs/working_history.md"),
             "# Working history",
@@ -543,6 +562,10 @@ mod tests {
 
         let documents = observe_documents(temp.path());
         assert_eq!(documents.readme.relative_path.as_deref(), Some("readme.md"));
+        assert_eq!(
+            documents.startup.relative_path.as_deref(),
+            Some("startup.md")
+        );
         assert_eq!(
             documents.working_history.relative_path.as_deref(),
             Some("docs/working_history.md")

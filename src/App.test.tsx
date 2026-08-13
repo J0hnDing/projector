@@ -29,6 +29,8 @@ vi.mock("./api", () => ({
   refreshProject: vi.fn(),
   refreshProjects: vi.fn(),
   pullProject: vi.fn(),
+  openExternalUrl: vi.fn(),
+  openProjectRoot: vi.fn(),
   approveCompletion: vi.fn(),
   rejectCompletion: vi.fn(),
   listPendingReviews: vi.fn().mockResolvedValue([]),
@@ -64,6 +66,7 @@ const detail: ProjectDetail = {
   },
   documents: {
     readme: { name: "README.md", relativePath: "README.md", status: "available", content: "# Hello", modifiedAt: null, truncated: false, error: null },
+    startup: { name: "STARTUP.md", relativePath: "STARTUP.md", status: "available", content: "# Start locally\n\n```powershell\nnpm run tauri dev\n```", modifiedAt: null, truncated: false, error: null },
     todo: { name: "TODO.md", relativePath: null, status: "missing", content: null, modifiedAt: null, truncated: false, error: null },
     workingHistory: { name: "WORK_HISTORY.md", relativePath: null, status: "missing", content: null, modifiedAt: null, truncated: false, error: null },
   },
@@ -218,6 +221,7 @@ describe("App", () => {
     vi.mocked(api.refreshProject).mockReset();
     vi.mocked(api.refreshProjects).mockReset();
     vi.mocked(api.pullProject).mockReset();
+    vi.mocked(api.openProjectRoot).mockReset();
     vi.mocked(api.approveCompletion).mockReset();
     vi.mocked(api.rejectCompletion).mockReset();
     vi.mocked(api.listPendingReviews).mockReset();
@@ -261,8 +265,23 @@ describe("App", () => {
 
     expect(await screen.findByRole("heading", { name: "Example" })).toBeInTheDocument();
     expect(screen.getAllByText("main")).toHaveLength(2);
+    await userEvent.click(screen.getByRole("tab", { name: "Startup" }));
+    expect(screen.getByRole("heading", { name: "Start locally" })).toBeInTheDocument();
+    expect(screen.getByText("npm run tauri dev")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("tab", { name: "TODO" }));
     expect(screen.getByText("TODO.md was not found")).toBeInTheDocument();
+  });
+
+  it("opens a registered project's root folder from its sidebar panel", async () => {
+    vi.mocked(api.listProjects).mockResolvedValue([detail.project]);
+    vi.mocked(api.openProject).mockResolvedValue(detail);
+    vi.mocked(api.openProjectRoot).mockResolvedValue(undefined);
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "Open Example folder" }));
+
+    expect(api.openProjectRoot).toHaveBeenCalledWith(detail.project.id);
   });
 
   it("registers a selected directory", async () => {
@@ -499,6 +518,37 @@ describe("DocumentPanel", () => {
     expect(content.closest("div")).toHaveAttribute("align", "center");
     expect(document.querySelector("script")).not.toBeInTheDocument();
     expect(screen.queryByText(/unsafe/)).not.toBeInTheDocument();
+  });
+
+  it("copies PowerShell startup scripts", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    render(<DocumentPanel copyPowerShell document={detail.documents.startup} />);
+
+    await userEvent.click(screen.getByRole("button", { name: "Copy" }));
+
+    expect(writeText).toHaveBeenCalledWith("npm run tauri dev");
+    expect(screen.getByRole("button", { name: "Copied" })).toBeInTheDocument();
+  });
+
+  it("opens Startup web links through the external-browser command", async () => {
+    vi.mocked(api.openExternalUrl).mockResolvedValue(undefined);
+    render(
+      <DocumentPanel
+        copyPowerShell
+        document={{
+          ...detail.documents.startup,
+          content: "Open [the local site](http://127.0.0.1:4817).",
+        }}
+      />,
+    );
+
+    await userEvent.click(screen.getByRole("link", { name: "the local site" }));
+
+    expect(api.openExternalUrl).toHaveBeenCalledWith("http://127.0.0.1:4817");
   });
 });
 

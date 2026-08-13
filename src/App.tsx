@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { FormEvent, ReactNode } from "react";
+import { isValidElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { FormEvent, MouseEvent, ReactNode } from "react";
 import rehypeRaw from "rehype-raw";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import Markdown from "react-markdown";
@@ -26,11 +26,12 @@ import type {
   WorkHistoryEntry,
 } from "./types";
 
-type Tab = "overview" | "readme" | "todo" | "pending" | "history" | "git" | "codex";
+type Tab = "overview" | "readme" | "startup" | "todo" | "pending" | "history" | "git" | "codex";
 
 const tabs: Array<{ id: Tab; label: string }> = [
   { id: "overview", label: "Overview" },
   { id: "readme", label: "README" },
+  { id: "startup", label: "Startup" },
   { id: "todo", label: "TODO" },
   { id: "pending", label: "Pending Review" },
   { id: "history", label: "Working history" },
@@ -509,6 +510,11 @@ export default function App() {
                 setSettingsOpen(false);
                 void openProject(project.id);
               }}
+              onOpenRoot={() => {
+                void api.openProjectRoot(project.id).catch((reason: unknown) => {
+                  setError(reason instanceof Error ? reason.message : String(reason));
+                });
+              }}
             />
           ))}
         </nav>
@@ -635,7 +641,7 @@ export default function App() {
               Initialize a Git repository
             </label>
             <p className="create-project-note">
-              Projector creates README.md, AGENTS.md, TODO.md, WORK_HISTORY.md, and the configured .codex/agents workers, then registers the folder. It does not create a commit or remote.
+              Projector creates README.md, STARTUP.md, AGENTS.md, TODO.md, WORK_HISTORY.md, and the configured .codex/agents workers, then registers the folder. It does not create a commit or remote.
             </p>
             <button
               aria-label="Confirm project creation"
@@ -652,9 +658,20 @@ export default function App() {
   );
 }
 
-function ProjectListItem({ project, selected, onSelect }: { project: ProjectSummary; selected: boolean; onSelect: () => void }) {
+function ProjectListItem({
+  project,
+  selected,
+  onSelect,
+  onOpenRoot,
+}: {
+  project: ProjectSummary;
+  selected: boolean;
+  onSelect: () => void;
+  onOpenRoot: () => void;
+}) {
   return (
-    <button className={`project-list-item${selected ? " selected" : ""}`} onClick={onSelect}>
+    <div className={`project-list-item${selected ? " selected" : ""}`}>
+      <button className="project-list-select" onClick={onSelect}>
       <span className="project-list-name">{project.name}</span>
       <span className="project-list-path" title={project.path}>{project.path}</span>
       <span className="project-list-meta">
@@ -664,7 +681,19 @@ function ProjectListItem({ project, selected, onSelect }: { project: ProjectSumm
         <span className="dot">·</span>
         <span>{formatRelative(project.git.lastActivity ?? project.lastOpened)}</span>
       </span>
-    </button>
+      </button>
+      <button
+        aria-label={`Open ${project.name} folder`}
+        className="project-folder-button"
+        onClick={onOpenRoot}
+        title="Open project folder"
+        type="button"
+      >
+        <svg aria-hidden="true" viewBox="0 0 24 24">
+          <path d="M3.5 6.75A2.25 2.25 0 0 1 5.75 4.5h4.06l1.7 2H18.25A2.25 2.25 0 0 1 20.5 8.75v8.5a2.25 2.25 0 0 1-2.25 2.25H5.75a2.25 2.25 0 0 1-2.25-2.25v-10.5Z" />
+        </svg>
+      </button>
+    </div>
   );
 }
 
@@ -748,6 +777,7 @@ function ProjectView({
       <section className="tab-content">
         {tab === "overview" && <Overview detail={detail} />}
         {tab === "readme" && <DocumentPanel document={detail.documents.readme} />}
+        {tab === "startup" && <DocumentPanel copyPowerShell document={detail.documents.startup} />}
         {tab === "todo" && (
           <TodoPanel document={detail.state.todos} source={detail.documents.todo} />
         )}
@@ -832,7 +862,13 @@ function Overview({ detail }: { detail: ProjectDetail }) {
   );
 }
 
-export function DocumentPanel({ document }: { document: ProjectDocument }) {
+export function DocumentPanel({
+  copyPowerShell = false,
+  document,
+}: {
+  copyPowerShell?: boolean;
+  document: ProjectDocument;
+}) {
   if (document.status === "missing") {
     return <StatusMessage title={`${document.name} was not found`} body={`Add ${document.name} to the project root or docs/ directory to make it visible here.`} />;
   }
@@ -850,6 +886,10 @@ export function DocumentPanel({ document }: { document: ProjectDocument }) {
       )}
       <div className="markdown-body">
         <Markdown
+          components={copyPowerShell ? {
+            a: ExternalBrowserLink,
+            pre: CopyablePowerShellPre,
+          } : undefined}
           remarkPlugins={[remarkGfm]}
           rehypePlugins={[rehypeRaw, [rehypeSanitize, markdownSanitizeSchema]]}
         >
@@ -858,6 +898,62 @@ export function DocumentPanel({ document }: { document: ProjectDocument }) {
       </div>
     </article>
   );
+}
+
+function ExternalBrowserLink({ children, href }: { children?: ReactNode; href?: string }) {
+  const [failed, setFailed] = useState(false);
+  const isExternal = href?.startsWith("https://") || href?.startsWith("http://");
+  if (!isExternal || !href) return <a href={href}>{children}</a>;
+
+  const open = async (event: MouseEvent<HTMLAnchorElement>) => {
+    event.preventDefault();
+    try {
+      await api.openExternalUrl(href);
+      setFailed(false);
+    } catch {
+      setFailed(true);
+    }
+  };
+
+  return (
+    <>
+      <a href={href} onClick={open}>{children}</a>
+      {failed && <span className="link-open-error" role="alert"> Could not open link.</span>}
+    </>
+  );
+}
+
+function CopyablePowerShellPre({ children }: { children?: ReactNode }) {
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "error">("idle");
+  if (!isValidElement<{ className?: string; children?: ReactNode }>(children)
+    || !children.props.className?.split(" ").includes("language-powershell")) {
+    return <pre>{children}</pre>;
+  }
+
+  const script = reactNodeText(children.props.children).replace(/\n$/, "");
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(script);
+      setCopyState("copied");
+    } catch {
+      setCopyState("error");
+    }
+  };
+
+  return (
+    <div className="powershell-block">
+      <button className="code-copy-button" onClick={copy} type="button">
+        {copyState === "copied" ? "Copied" : copyState === "error" ? "Copy failed" : "Copy"}
+      </button>
+      <pre>{children}</pre>
+    </div>
+  );
+}
+
+function reactNodeText(node: ReactNode): string {
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(reactNodeText).join("");
+  return isValidElement<{ children?: ReactNode }>(node) ? reactNodeText(node.props.children) : "";
 }
 
 function GitPanel({ git }: { git: GitInfo }) {
