@@ -9,6 +9,7 @@ import type {
   ProjectDetail,
   ProjectSummary,
   SettingsMigrationResult,
+  StartProjectResult,
   SubagentSettings,
 } from "./types";
 
@@ -18,6 +19,10 @@ export function listProjects(): Promise<ProjectSummary[]> {
 
 export function registerProject(path: string): Promise<ProjectSummary> {
   return invoke("register_project", { path });
+}
+
+export function reorderProject(id: string, newIndex: number): Promise<ProjectSummary[]> {
+  return invoke("reorder_project", { id, newIndex });
 }
 
 export function createProject(parentPath: string, name: string, initializeGit: boolean): Promise<ProjectSummary> {
@@ -76,12 +81,24 @@ export function pullProject(id: string): Promise<ProjectDetail> {
   return invoke("pull_project", { id });
 }
 
+export function commitProject(id: string, message: string): Promise<ProjectDetail> {
+  return invoke("commit_project", { id, message });
+}
+
+export function pushProject(id: string): Promise<ProjectDetail> {
+  return invoke("push_project", { id });
+}
+
 export function openExternalUrl(url: string): Promise<void> {
   return invoke("open_external_url", { url });
 }
 
 export function openProjectRoot(id: string): Promise<void> {
   return invoke("open_project_root", { id });
+}
+
+export function startProject(id: string): Promise<StartProjectResult> {
+  return invoke("start_project", { id });
 }
 
 export function approveCompletion(id: string, proposalId: string): Promise<void> {

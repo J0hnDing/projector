@@ -45,6 +45,7 @@ export interface ProjectDocument {
 
 export interface ProjectDocuments {
   readme: ProjectDocument;
+  agents: ProjectDocument;
   startup: ProjectDocument;
   todo: ProjectDocument;
   workingHistory: ProjectDocument;
@@ -54,6 +55,11 @@ export interface ProjectDetail {
   project: ProjectSummary;
   documents: ProjectDocuments;
   state: ProjectState;
+}
+
+export interface StartProjectResult {
+  scriptsStarted: number;
+  websitesOpened: number;
 }
 
 export type TodoPriority = "critical" | "high" | "medium" | "low";
@@ -137,6 +143,7 @@ export interface WorkerAgentSettings {
 
 export interface SubagentSettings {
   version: number;
+  customSection: string;
   projectorSection: string;
   subagentsSection: string;
   workerLow: WorkerAgentSettings;

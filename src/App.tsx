@@ -1,4 +1,4 @@
-import { isValidElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { isValidElement, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, MouseEvent, ReactNode } from "react";
 import rehypeRaw from "rehype-raw";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
@@ -26,18 +26,22 @@ import type {
   WorkHistoryEntry,
 } from "./types";
 
-type Tab = "overview" | "readme" | "startup" | "todo" | "pending" | "history" | "git" | "codex";
+type Tab = "overview" | "readme" | "agents" | "startup" | "todo" | "pending" | "history" | "git" | "codex";
+type Appearance = "dark" | "light";
+type SettingsTab = "appearance" | "agents";
 
 const tabs: Array<{ id: Tab; label: string }> = [
   { id: "overview", label: "Overview" },
   { id: "readme", label: "README" },
+  { id: "agents", label: "AGENTS.md" },
   { id: "startup", label: "Startup" },
   { id: "todo", label: "TODO" },
   { id: "pending", label: "Pending Review" },
   { id: "history", label: "Working history" },
   { id: "git", label: "Git activity" },
-  { id: "codex", label: "Codex" },
 ];
+
+const appearanceStorageKey = "projector.appearance";
 
 type WorkerKey = "workerLow" | "workerMedium" | "workerHigh";
 
@@ -75,6 +79,11 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [pulling, setPulling] = useState(false);
+  const [committing, setCommitting] = useState(false);
+  const [pushing, setPushing] = useState(false);
+  const [commitDialogOpen, setCommitDialogOpen] = useState(false);
+  const [commitMessage, setCommitMessage] = useState("");
+  const [startingProjectId, setStartingProjectId] = useState<string | null>(null);
   const [reviewingProposal, setReviewingProposal] = useState<string | null>(null);
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [creatingProject, setCreatingProject] = useState(false);
@@ -89,16 +98,59 @@ export default function App() {
   const [subagentSettings, setSubagentSettings] = useState<SubagentSettings | null>(null);
   const [settingsPreview, setSettingsPreview] = useState<GeneratedSubagentFile[] | null>(null);
   const [settingsMessage, setSettingsMessage] = useState<string | null>(null);
+  const [appearance, setAppearance] = useState<Appearance>(() => {
+    const saved = window.localStorage.getItem(appearanceStorageKey);
+    return saved === "light" ? "light" : "dark";
+  });
   const [codexMonitoring, setCodexMonitoring] = useState<CodexMonitoringSnapshot | null>(null);
   const [codexBusySession, setCodexBusySession] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const selectedIdRef = useRef<string | null>(null);
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const createNameInput = useRef<HTMLInputElement>(null);
+  const commitMessageInput = useRef<HTMLInputElement>(null);
+  const projectListRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
     selectedIdRef.current = selectedId;
   }, [selectedId]);
+
+  useEffect(() => {
+    document.documentElement.dataset.appearance = appearance;
+    window.localStorage.setItem(appearanceStorageKey, appearance);
+  }, [appearance]);
+
+  useLayoutEffect(() => {
+    const projectList = projectListRef.current;
+    const activeProject = settingsOpen
+      ? null
+      : projectList?.querySelector<HTMLElement>(".project-list-item.selected");
+    if (!projectList || !activeProject) {
+      if (projectList) delete projectList.dataset.indicatorReady;
+      return;
+    }
+
+    const positionIndicator = () => {
+      const indicatorHeight = Math.max(16, Math.min(58, activeProject.offsetHeight - 12));
+      const y = activeProject.offsetTop + (activeProject.offsetHeight - indicatorHeight) / 2;
+      projectList.style.setProperty("--project-indicator-y", `${y}px`);
+      projectList.style.setProperty("--project-indicator-height", `${indicatorHeight}px`);
+      projectList.dataset.indicatorReady = "true";
+    };
+
+    positionIndicator();
+    window.addEventListener("resize", positionIndicator);
+    const resizeObserver = typeof ResizeObserver === "undefined"
+      ? null
+      : new ResizeObserver(positionIndicator);
+    resizeObserver?.observe(projectList);
+    resizeObserver?.observe(activeProject);
+
+    return () => {
+      window.removeEventListener("resize", positionIndicator);
+      resizeObserver?.disconnect();
+    };
+  }, [projects, selectedId, settingsOpen]);
 
   const openProject = useCallback(async (id: string, updateOpened = true, showProgress = true) => {
     setSelectedId(id);
@@ -123,6 +175,27 @@ export default function App() {
     setProjects(nextProjects);
     return nextProjects;
   }, []);
+
+  const startProject = async (id: string) => {
+    setError(null);
+    setStartingProjectId(id);
+    try {
+      await api.startProject(id);
+    } catch (reason) {
+      setError(messageFrom(reason));
+    } finally {
+      setStartingProjectId(null);
+    }
+  };
+
+  const moveProject = async (id: string, newIndex: number) => {
+    setError(null);
+    try {
+      setProjects(await api.reorderProject(id, newIndex));
+    } catch (reason) {
+      setError(`Unable to reorder project: ${messageFrom(reason)}`);
+    }
+  };
 
   useEffect(() => {
     let active = true;
@@ -335,6 +408,42 @@ export default function App() {
     }
   };
 
+  const commit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const id = selectedIdRef.current;
+    const message = commitMessage.trim();
+    if (!id || !message) return;
+    try {
+      setError(null);
+      setCommitting(true);
+      const nextDetail = await api.commitProject(id, message);
+      setDetail(nextDetail);
+      setCommitDialogOpen(false);
+      setCommitMessage("");
+      await loadProjects();
+    } catch (reason) {
+      setError(messageFrom(reason));
+    } finally {
+      setCommitting(false);
+    }
+  };
+
+  const push = async () => {
+    const id = selectedIdRef.current;
+    if (!id) return;
+    try {
+      setError(null);
+      setPushing(true);
+      const nextDetail = await api.pushProject(id);
+      setDetail(nextDetail);
+      await loadProjects();
+    } catch (reason) {
+      setError(messageFrom(reason));
+    } finally {
+      setPushing(false);
+    }
+  };
+
   const approveCompletion = async (proposalId: string) => {
     const id = selectedIdRef.current;
     if (!id) return;
@@ -483,13 +592,19 @@ export default function App() {
             <p className="eyebrow">Local project observer</p>
             <h1>Projector</h1>
           </div>
-          <button className="icon-button" onClick={() => void refresh()} title="Refresh projects" aria-label="Refresh projects">
+          <button
+            aria-label="Refresh projects"
+            className={`icon-button${refreshing ? " refreshing" : ""}`}
+            disabled={refreshing}
+            onClick={() => void refresh()}
+            title="Refresh projects"
+          >
             ↻
           </button>
         </header>
 
         <div className="project-actions">
-          <button className="primary-button register-button" onClick={beginCreate}>
+          <button className="primary-button register-button create-project-button" onClick={beginCreate}>
             <span aria-hidden="true">＋</span> Create project
           </button>
           <button className="secondary-button register-button" onClick={() => void register()}>
@@ -500,7 +615,7 @@ export default function App() {
         <div className="project-count">
           {projects.length} {projects.length === 1 ? "project" : "projects"}
         </div>
-        <nav className="project-list" aria-label="Registered projects">
+        <nav className="project-list" aria-label="Registered projects" ref={projectListRef}>
           {projects.map((project) => (
             <ProjectListItem
               key={project.id}
@@ -515,20 +630,25 @@ export default function App() {
                   setError(reason instanceof Error ? reason.message : String(reason));
                 });
               }}
+              onStart={() => void startProject(project.id)}
+              starting={startingProjectId === project.id}
             />
           ))}
+          <span aria-hidden="true" className="project-active-indicator" />
         </nav>
         {!loading && projects.length === 0 && (
           <div className="sidebar-empty">
             Create a project or register an existing local folder to get started.
           </div>
         )}
-        <button
-          className={`settings-button${settingsOpen ? " selected" : ""}`}
-          onClick={() => void openSettings()}
-        >
-          Settings
-        </button>
+        <div className="sidebar-settings">
+          <button
+            className={`settings-button${settingsOpen ? " selected" : ""}`}
+            onClick={() => void openSettings()}
+          >
+            Settings
+          </button>
+        </div>
       </aside>
 
       <main className="workspace">
@@ -540,6 +660,7 @@ export default function App() {
         )}
         {settingsOpen ? (
           <SubagentSettingsPage
+            appearance={appearance}
             loading={settingsLoading}
             message={settingsMessage}
             onChange={(settings) => {
@@ -549,6 +670,8 @@ export default function App() {
             }}
             onPreview={() => void previewSettings()}
             onMigrate={() => void migrateSettings()}
+            onMoveProject={(id, newIndex) => void moveProject(id, newIndex)}
+            onAppearance={setAppearance}
             onMigrationProjectIds={setMigrationProjectIds}
             onReset={() => void resetSettings()}
             onSave={(event) => void saveSettings(event)}
@@ -565,12 +688,17 @@ export default function App() {
           <ProjectView
             detail={detail}
             tab={tab}
-            refreshing={refreshing}
             pulling={pulling}
+            committing={committing}
+            pushing={pushing}
             reviewingProposal={reviewingProposal}
             onTab={setTab}
-            onRefresh={() => void refresh()}
             onPull={() => void pull()}
+            onCommit={() => {
+              setCommitMessage("");
+              setCommitDialogOpen(true);
+            }}
+            onPush={() => void push()}
             onRemove={() => void remove()}
             onApproveCompletion={(proposalId) => void approveCompletion(proposalId)}
             onRejectCompletion={(proposalId) => void rejectCompletion(proposalId)}
@@ -582,10 +710,10 @@ export default function App() {
         ) : (
           <CenteredMessage
             title={projects.length ? "Select a project" : "Your projects, at a glance"}
-            body={projects.length ? "Choose a registered project from the list." : "Create a Projector-ready folder or register an existing project. Projector never runs your project."}
+            body={projects.length ? "Choose a registered project from the list." : "Create a Projector-ready folder or register an existing project. Projector only runs STARTUP.md when you press Start."}
             action={!projects.length ? (
               <div className="empty-actions">
-                <button className="primary-button" onClick={beginCreate}>Create your first project</button>
+                <button className="primary-button create-project-button" onClick={beginCreate}>Create your first project</button>
                 <button className="secondary-button" onClick={() => void register()}>Register an existing folder</button>
               </div>
             ) : undefined}
@@ -645,11 +773,43 @@ export default function App() {
             </p>
             <button
               aria-label="Confirm project creation"
-              className="primary-button"
+              className="primary-button create-project-button"
               disabled={creatingProject || !newProjectName.trim() || !newProjectParent}
               type="submit"
             >
               {creatingProject ? "Creating…" : "Create project"}
+            </button>
+          </form>
+        </DetailWindow>
+      )}
+      {commitDialogOpen && (
+        <DetailWindow
+          id="commit-project"
+          initialFocusRef={commitMessageInput}
+          onClose={() => {
+            if (!committing) setCommitDialogOpen(false);
+          }}
+          title="Commit changes"
+        >
+          <form className="create-project-form" onSubmit={(event) => void commit(event)}>
+            <label>
+              Commit message
+              <input
+                maxLength={500}
+                onChange={(event) => setCommitMessage(event.target.value)}
+                placeholder="Describe these changes"
+                ref={commitMessageInput}
+                required
+                value={commitMessage}
+              />
+            </label>
+            <p className="create-project-note">All changes in this registered project will be staged and committed.</p>
+            <button
+              className="primary-button"
+              disabled={committing || !commitMessage.trim()}
+              type="submit"
+            >
+              {committing ? "Committing…" : "Commit"}
             </button>
           </form>
         </DetailWindow>
@@ -663,36 +823,58 @@ function ProjectListItem({
   selected,
   onSelect,
   onOpenRoot,
+  onStart,
+  starting,
 }: {
   project: ProjectSummary;
   selected: boolean;
   onSelect: () => void;
   onOpenRoot: () => void;
+  onStart: () => void;
+  starting: boolean;
 }) {
   return (
     <div className={`project-list-item${selected ? " selected" : ""}`}>
-      <button className="project-list-select" onClick={onSelect}>
-      <span className="project-list-name">{project.name}</span>
-      <span className="project-list-path" title={project.path}>{project.path}</span>
-      <span className="project-list-meta">
-        <GitBadge git={project.git} />
-        <span>{project.git.branch ?? "No Git"}</span>
-        {project.git.isRepository && <span>{syncStatusLabel(project.git)}</span>}
-        <span className="dot">·</span>
-        <span>{formatRelative(project.git.lastActivity ?? project.lastOpened)}</span>
-      </span>
+      <button aria-current={selected ? "page" : undefined} className="project-list-select" onClick={onSelect}>
+        <span className="project-list-name">{project.name}</span>
+        <span className="project-list-path" title={project.path}>{project.path}</span>
+        <span className="project-list-meta">
+          <GitBadge git={project.git} />
+          {project.git.isRepository && (
+            <>
+              <span className="dot">·</span>
+              <span>{project.git.syncStatus === "synchronized" ? "Synched" : "Unsynched"}</span>
+            </>
+          )}
+          <span className="dot">·</span>
+          <span>{formatRelative(project.git.lastActivity ?? project.lastOpened)}</span>
+        </span>
       </button>
-      <button
-        aria-label={`Open ${project.name} folder`}
-        className="project-folder-button"
-        onClick={onOpenRoot}
-        title="Open project folder"
-        type="button"
-      >
-        <svg aria-hidden="true" viewBox="0 0 24 24">
-          <path d="M3.5 6.75A2.25 2.25 0 0 1 5.75 4.5h4.06l1.7 2H18.25A2.25 2.25 0 0 1 20.5 8.75v8.5a2.25 2.25 0 0 1-2.25 2.25H5.75a2.25 2.25 0 0 1-2.25-2.25v-10.5Z" />
-        </svg>
-      </button>
+      <div className="project-item-actions">
+        <button
+          aria-label={`Open ${project.name} folder`}
+          className="project-action-button"
+          onClick={onOpenRoot}
+          title="Open project folder"
+          type="button"
+        >
+          <svg aria-hidden="true" viewBox="0 0 24 24">
+            <path d="M3.5 6.75A2.25 2.25 0 0 1 5.75 4.5h4.06l1.7 2H18.25A2.25 2.25 0 0 1 20.5 8.75v8.5a2.25 2.25 0 0 1-2.25 2.25H5.75a2.25 2.25 0 0 1-2.25-2.25v-10.5Z" />
+          </svg>
+        </button>
+        <button
+          aria-label={starting ? `Starting ${project.name}` : `Start ${project.name}`}
+          className="project-action-button project-start-button"
+          disabled={starting}
+          onClick={onStart}
+          title="Run STARTUP.md"
+          type="button"
+        >
+          <svg aria-hidden="true" viewBox="0 0 24 24">
+            <path d="m8 5.5 9 6.5-9 6.5v-13Z" />
+          </svg>
+        </button>
+      </div>
     </div>
   );
 }
@@ -700,12 +882,14 @@ function ProjectListItem({
 function ProjectView({
   detail,
   tab,
-  refreshing,
   pulling,
+  committing,
+  pushing,
   reviewingProposal,
   onTab,
-  onRefresh,
   onPull,
+  onCommit,
+  onPush,
   onRemove,
   onApproveCompletion,
   onRejectCompletion,
@@ -716,12 +900,14 @@ function ProjectView({
 }: {
   detail: ProjectDetail;
   tab: Tab;
-  refreshing: boolean;
   pulling: boolean;
+  committing: boolean;
+  pushing: boolean;
   reviewingProposal: string | null;
   onTab: (tab: Tab) => void;
-  onRefresh: () => void;
   onPull: () => void;
+  onCommit: () => void;
+  onPush: () => void;
   onRemove: () => void;
   onApproveCompletion: (proposalId: string) => void;
   onRejectCompletion: (proposalId: string) => void;
@@ -731,6 +917,36 @@ function ProjectView({
   onUnlinkCodexSession: (sessionId: string) => void;
 }) {
   const pullUnavailableReason = getPullUnavailableReason(detail.project.git);
+  const commitUnavailableReason = getCommitUnavailableReason(detail.project.git);
+  const pushUnavailableReason = getPushUnavailableReason(detail.project.git);
+  const tabsRef = useRef<HTMLDivElement>(null);
+
+  useLayoutEffect(() => {
+    const tabList = tabsRef.current;
+    const activeTab = tabList?.querySelector<HTMLElement>("button.active");
+    if (!tabList || !activeTab) return;
+
+    const positionIndicator = () => {
+      const inset = 12;
+      tabList.style.setProperty("--tab-indicator-x", `${activeTab.offsetLeft + inset}px`);
+      tabList.style.setProperty("--tab-indicator-width", `${Math.max(16, activeTab.offsetWidth - inset * 2)}px`);
+      tabList.dataset.indicatorReady = "true";
+    };
+
+    positionIndicator();
+    window.addEventListener("resize", positionIndicator);
+    const resizeObserver = typeof ResizeObserver === "undefined"
+      ? null
+      : new ResizeObserver(positionIndicator);
+    resizeObserver?.observe(tabList);
+    resizeObserver?.observe(activeTab);
+
+    return () => {
+      window.removeEventListener("resize", positionIndicator);
+      resizeObserver?.disconnect();
+    };
+  }, [tab]);
+
   return (
     <div className="project-view">
       <header className="project-header">
@@ -750,14 +966,27 @@ function ProjectView({
           >
             {pulling ? "Pulling…" : "Pull"}
           </button>
-          <button className="secondary-button" onClick={onRefresh} disabled={refreshing}>
-            {refreshing ? "Refreshing…" : "Refresh"}
+          <button
+            className="secondary-button"
+            disabled={committing || commitUnavailableReason !== null}
+            onClick={onCommit}
+            title={commitUnavailableReason ?? "Stage and commit all project changes"}
+          >
+            {committing ? "Committing…" : "Commit"}
+          </button>
+          <button
+            className="secondary-button"
+            disabled={pushing || pushUnavailableReason !== null}
+            onClick={onPush}
+            title={pushUnavailableReason ?? "Push the current branch to its configured upstream"}
+          >
+            {pushing ? "Pushing…" : "Push"}
           </button>
           <button className="text-button danger" onClick={onRemove}>Remove</button>
         </div>
       </header>
 
-      <div className="tabs" role="tablist" aria-label="Project information">
+      <div className="tabs" role="tablist" aria-label="Project information" ref={tabsRef}>
         {tabs.map((item) => (
           <button
             key={item.id}
@@ -772,11 +1001,13 @@ function ProjectView({
             )}
           </button>
         ))}
+        <span aria-hidden="true" className="tab-active-indicator" />
       </div>
 
-      <section className="tab-content">
+      <section className="tab-content" key={tab}>
         {tab === "overview" && <Overview detail={detail} />}
         {tab === "readme" && <DocumentPanel document={detail.documents.readme} />}
+        {tab === "agents" && <DocumentPanel document={detail.documents.agents} />}
         {tab === "startup" && <DocumentPanel copyPowerShell document={detail.documents.startup} />}
         {tab === "todo" && (
           <TodoPanel document={detail.state.todos} source={detail.documents.todo} />
@@ -810,9 +1041,32 @@ function ProjectView({
 }
 
 function Overview({ detail }: { detail: ProjectDetail }) {
-  const documents = [detail.documents.readme, detail.documents.todo, detail.documents.workingHistory];
+  const documents = [detail.documents.readme, detail.documents.agents, detail.documents.todo, detail.documents.workingHistory];
+  const priorityCounts = detail.state.todos.items.reduce<Record<TodoPriority, number>>(
+    (counts, todo) => ({ ...counts, [todo.priority]: counts[todo.priority] + 1 }),
+    { critical: 0, high: 0, medium: 0, low: 0 },
+  );
   return (
     <div className="overview-grid">
+      <section className="panel overview-counts" aria-label="Project counts">
+        <p className="section-label">Project counts</p>
+        <div className="overview-count-grid">
+          {(["critical", "high", "medium", "low"] as TodoPriority[]).map((priority) => (
+            <div className={`overview-count priority-${priority}`} key={priority}>
+              <span>{priority} TODOs</span>
+              <strong>{priorityCounts[priority]}</strong>
+            </div>
+          ))}
+          <div className="overview-count">
+            <span>Pending reviews</span>
+            <strong>{detail.state.pendingReviews.length}</strong>
+          </div>
+          <div className="overview-count">
+            <span>History entries</span>
+            <strong>{detail.state.workingHistory.entries.length}</strong>
+          </div>
+        </div>
+      </section>
       <section className="panel git-overview">
         <p className="section-label">Repository</p>
         {detail.project.git.isRepository ? (
@@ -1125,7 +1379,7 @@ function CommitList({ commits }: { commits: GitInfo["recentCommits"] }) {
       {commits.map((commit) => (
         <li key={commit.id}>
           <code>{commit.id}</code>
-          <div>
+          <div className="commit-details">
             <strong>{commit.summary}</strong>
             <p>{commit.author} · {formatDate(commit.committedAt)}</p>
           </div>
@@ -1161,10 +1415,13 @@ function syncStatusLabel(git: GitInfo): string {
 }
 
 function SubagentSettingsPage({
+  appearance,
   loading,
   message,
   onChange,
   onMigrate,
+  onAppearance,
+  onMoveProject,
   onMigrationProjectIds,
   onPreview,
   onReset,
@@ -1176,10 +1433,13 @@ function SubagentSettingsPage({
   migrationProjectIds,
   settings,
 }: {
+  appearance: Appearance;
   loading: boolean;
   message: string | null;
   onChange: (settings: SubagentSettings) => void;
   onMigrate: () => void;
+  onAppearance: (appearance: Appearance) => void;
+  onMoveProject: (id: string, newIndex: number) => void;
   onMigrationProjectIds: (ids: string[]) => void;
   onPreview: () => void;
   onReset: () => void;
@@ -1191,9 +1451,37 @@ function SubagentSettingsPage({
   migrationProjectIds: string[];
   settings: SubagentSettings | null;
 }) {
-  if (loading) return <CenteredMessage title="Loading settings…" />;
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>("appearance");
+
+  if (loading) {
+    return (
+      <div className="settings-page">
+        <SettingsIntro
+          appearance={appearance}
+          onAppearance={onAppearance}
+          onMoveProject={onMoveProject}
+          projects={projects}
+          tab={settingsTab}
+          onTab={setSettingsTab}
+        />
+        {settingsTab === "agents" && <StatusMessage title="Loading project settings…" />}
+      </div>
+    );
+  }
   if (!settings) {
-    return <CenteredMessage title="Project settings are unavailable" body="Review the error above and try again." />;
+    return (
+      <div className="settings-page">
+        <SettingsIntro
+          appearance={appearance}
+          onAppearance={onAppearance}
+          onMoveProject={onMoveProject}
+          projects={projects}
+          tab={settingsTab}
+          onTab={setSettingsTab}
+        />
+        {settingsTab === "agents" && <StatusMessage title="Project settings are unavailable" body="Review the error above and try again." />}
+      </div>
+    );
   }
 
   const updateWorker = <K extends keyof SubagentSettings[WorkerKey]>(
@@ -1209,15 +1497,30 @@ function SubagentSettingsPage({
 
   return (
     <div className="settings-page">
-      <header className="settings-header">
-        <div>
-          <p className="eyebrow">Project configuration</p>
-          <h2>Project settings</h2>
-          <p>New projects use these defaults. You can also explicitly migrate selected registered projects below.</p>
-        </div>
-      </header>
-      <form className="settings-form" onSubmit={onSave}>
+      <SettingsIntro
+        appearance={appearance}
+        onAppearance={onAppearance}
+        onMoveProject={onMoveProject}
+        projects={projects}
+        tab={settingsTab}
+        onTab={setSettingsTab}
+      />
+      {settingsTab === "agents" && <form className="settings-form" onSubmit={onSave}>
         {message && <div className="notice success" role="status">{message}</div>}
+        <section className="panel settings-section">
+          <h3>Custom instructions</h3>
+          <label htmlFor="custom-section">AGENTS.md custom instructions</label>
+          <p>Edit the complete Markdown section. It must begin with <code>## Custom instructions</code>.</p>
+          <textarea
+            id="custom-section"
+            maxLength={32_000}
+            onChange={(event) => onChange({ ...settings, customSection: event.target.value })}
+            required
+            rows={12}
+            value={settings.customSection}
+          />
+        </section>
+
         <section className="panel settings-section">
           <h3>Projector</h3>
           <label htmlFor="projector-section">AGENTS.md Projector section</label>
@@ -1320,7 +1623,7 @@ function SubagentSettingsPage({
 
         <section className="panel settings-section migration-settings" aria-label="Project migration">
           <h3>Migrate registered projects</h3>
-          <p>Apply the current Projector section, Subagents section, and three worker TOMLs. Other AGENTS.md sections are preserved. Originals receive a <code>.projector-backup</code> before their first change.</p>
+          <p>Apply the current Custom instructions, Projector, and Subagents sections plus three worker TOMLs. Other AGENTS.md sections are preserved. Originals receive a <code>.projector-backup</code> before their first change.</p>
           {projects.length === 0 ? (
             <p>No registered projects are available.</p>
           ) : (
@@ -1372,8 +1675,142 @@ function SubagentSettingsPage({
             ))}
           </section>
         )}
-      </form>
+      </form>}
     </div>
+  );
+}
+
+function SettingsIntro({
+  appearance,
+  onAppearance,
+  onMoveProject,
+  projects,
+  tab,
+  onTab,
+}: {
+  appearance: Appearance;
+  onAppearance: (appearance: Appearance) => void;
+  onMoveProject: (id: string, newIndex: number) => void;
+  projects: ProjectSummary[];
+  tab: SettingsTab;
+  onTab: (tab: SettingsTab) => void;
+}) {
+  const [orderProjectId, setOrderProjectId] = useState(projects[0]?.id ?? "");
+  const orderProjectIndex = projects.findIndex((project) => project.id === orderProjectId);
+  const settingsTabsRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!projects.some((project) => project.id === orderProjectId)) {
+      setOrderProjectId(projects[0]?.id ?? "");
+    }
+  }, [orderProjectId, projects]);
+
+  useLayoutEffect(() => {
+    const tabList = settingsTabsRef.current;
+    const activeTab = tabList?.querySelector<HTMLElement>("button.active");
+    if (!tabList || !activeTab) return;
+    const positionIndicator = () => {
+      const inset = 12;
+      tabList.style.setProperty("--tab-indicator-x", `${activeTab.offsetLeft + inset}px`);
+      tabList.style.setProperty("--tab-indicator-width", `${Math.max(16, activeTab.offsetWidth - inset * 2)}px`);
+      tabList.dataset.indicatorReady = "true";
+    };
+    positionIndicator();
+    window.addEventListener("resize", positionIndicator);
+    const resizeObserver = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(positionIndicator);
+    resizeObserver?.observe(tabList);
+    resizeObserver?.observe(activeTab);
+    return () => {
+      window.removeEventListener("resize", positionIndicator);
+      resizeObserver?.disconnect();
+    };
+  }, [tab]);
+
+  return (
+    <>
+      <header className="settings-header">
+        <div>
+          <p className="eyebrow">Project configuration</p>
+          <h2>Project settings</h2>
+          <p>New projects use these defaults. You can also explicitly migrate selected registered projects below.</p>
+        </div>
+      </header>
+      <div className="tabs settings-tabs" role="tablist" aria-label="Settings sections" ref={settingsTabsRef}>
+        <button className={tab === "appearance" ? "active" : ""} onClick={() => onTab("appearance")} role="tab" aria-selected={tab === "appearance"} type="button">Appearance</button>
+        <button className={tab === "agents" ? "active" : ""} onClick={() => onTab("agents")} role="tab" aria-selected={tab === "agents"} type="button">AGENTS.md</button>
+        <span aria-hidden="true" className="tab-active-indicator" />
+      </div>
+      {tab === "appearance" && <section className="panel settings-section appearance-section" aria-labelledby="appearance-heading">
+        <div className="appearance-setting-row">
+          <div>
+            <p className="eyebrow">Interface</p>
+            <h3 id="appearance-heading">Appearance</h3>
+            <p>Choose the theme used throughout Projector. Your choice is saved on this device.</p>
+          </div>
+          <div className="appearance-options" role="group" aria-label="Appearance">
+            <button
+              aria-pressed={appearance === "dark"}
+              className={appearance === "dark" ? "selected" : ""}
+              onClick={() => onAppearance("dark")}
+              type="button"
+            >
+              <span className="theme-preview dark-preview" aria-hidden="true"><span /></span>
+              <span>Dark</span>
+            </button>
+            <button
+              aria-pressed={appearance === "light"}
+              className={appearance === "light" ? "selected" : ""}
+              onClick={() => onAppearance("light")}
+              type="button"
+            >
+              <span className="theme-preview light-preview" aria-hidden="true"><span /></span>
+              <span>Light</span>
+            </button>
+          </div>
+        </div>
+        {projects.length > 0 && (
+          <div className="appearance-setting-row project-order-setting">
+            <div>
+              <p className="eyebrow">Sidebar</p>
+              <h3>Project order</h3>
+              <p>Select a project, then move it to its preferred fixed position in the sidebar.</p>
+            </div>
+            <div className="project-order-picker">
+              <label>
+                Project
+                <select
+                  aria-label="Project to reorder"
+                  onChange={(event) => setOrderProjectId(event.target.value)}
+                  value={orderProjectId}
+                >
+                  {projects.map((project, index) => (
+                    <option key={project.id} value={project.id}>{index + 1}. {project.name}</option>
+                  ))}
+                </select>
+              </label>
+              <div className="project-order-actions">
+                <button
+                  className="secondary-button"
+                  disabled={orderProjectIndex <= 0}
+                  onClick={() => onMoveProject(orderProjectId, orderProjectIndex - 1)}
+                  type="button"
+                >
+                  Move up
+                </button>
+                <button
+                  className="secondary-button"
+                  disabled={orderProjectIndex < 0 || orderProjectIndex >= projects.length - 1}
+                  onClick={() => onMoveProject(orderProjectId, orderProjectIndex + 1)}
+                  type="button"
+                >
+                  Move down
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </section>}
+    </>
   );
 }
 
@@ -1386,6 +1823,9 @@ export function TodoPanel({
 }) {
   const [selectedTodoId, setSelectedTodoId] = useState<string | null>(null);
   const [category, setCategory] = useState<WorkCategory | "all">("all");
+  const [priority, setPriority] = useState<TodoPriority | "all">("all");
+  const [availability, setAvailability] = useState<"all" | "available" | "blocked">("all");
+  const [addedOrder, setAddedOrder] = useState<"newest" | "oldest">("newest");
 
   if (source.status === "missing") {
     return (
@@ -1405,13 +1845,18 @@ export function TodoPanel({
     );
   }
 
-  const priorities: TodoPriority[] = ["critical", "high", "medium", "low"];
   const categories = workCategories.filter((value) =>
     document.items.some((item) => item.category === value),
   );
-  const filteredItems = document.items.filter(
-    (item) => category === "all" || item.category === category,
-  );
+  const filteredItems = document.items
+    .filter((item) => category === "all" || item.category === category)
+    .filter((item) => priority === "all" || item.priority === priority)
+    .filter((item) => availability === "all" || todoStatus(item.dependencies) === availability)
+    .sort((left, right) => {
+      const direction = addedOrder === "newest" ? -1 : 1;
+      return direction * (todoSequence(left.id) - todoSequence(right.id))
+        || direction * left.id.localeCompare(right.id);
+    });
   const selectedTodo = document.items.find((item) => item.id === selectedTodoId) ?? null;
 
   return (
@@ -1424,6 +1869,43 @@ export function TodoPanel({
       <ValidationWarnings warnings={document.warnings} />
       {document.items.length > 0 && (
         <div className="history-controls todo-controls panel" aria-label="TODO filters">
+          <label>
+            Priority
+            <select
+              value={priority}
+              onChange={(event) => {
+                setPriority(event.target.value as TodoPriority | "all");
+                setSelectedTodoId(null);
+              }}
+            >
+              <option value="all">All priorities</option>
+              <option value="critical">Critical</option>
+              <option value="high">High</option>
+              <option value="medium">Medium</option>
+              <option value="low">Low</option>
+            </select>
+          </label>
+          <label>
+            Availability
+            <select
+              value={availability}
+              onChange={(event) => {
+                setAvailability(event.target.value as "all" | "available" | "blocked");
+                setSelectedTodoId(null);
+              }}
+            >
+              <option value="all">All TODOs</option>
+              <option value="available">Available</option>
+              <option value="blocked">Blocked</option>
+            </select>
+          </label>
+          <label>
+            Added
+            <select value={addedOrder} onChange={(event) => setAddedOrder(event.target.value as "newest" | "oldest")}>
+              <option value="newest">Newest first</option>
+              <option value="oldest">Oldest first</option>
+            </select>
+          </label>
           <label>
             Category
             <select
@@ -1442,51 +1924,43 @@ export function TodoPanel({
         </div>
       )}
       {document.items.length ? (
-        <div className="priority-board" aria-label="TODOs by priority">
-          {priorities.map((priority) => {
-            const items = filteredItems.filter((item) => item.priority === priority);
-            return (
-              <section className={`priority-column priority-${priority}`} key={priority}>
-                <div className="priority-column-heading">
-                  <h3>{priority}</h3>
-                  <span>{items.length}</span>
-                </div>
-                <div className="priority-column-items">
-                  {items.length ? items.map((item) => {
-                    const selected = selectedTodoId === item.id;
-                    const status = todoStatus(item.dependencies);
-                    return (
-                      <article
-                        className={`todo-card${status === "blocked" ? " blocked" : ""}${selected ? " selected" : ""}`}
-                        key={item.id}
-                      >
-                        <button
-                          aria-haspopup="dialog"
-                          aria-label={`Open ${item.title}`}
-                          className="todo-summary"
-                          id={`todo-${item.id}`}
-                          onClick={() => setSelectedTodoId(item.id)}
-                          type="button"
-                        >
-                          <span className="todo-title">{item.title}</span>
-                          <span aria-hidden="true" className="card-open-indicator">›</span>
-                          <span className="todo-metadata">
-                            <code>{item.id}</code>
-                            <span>{status}</span>
-                            <span>{item.category}</span>
-                            <span>{item.area}</span>
-                          </span>
-                        </button>
-                      </article>
-                    );
-                  }) : (
-                    <p className="priority-empty">No {priority} TODOs</p>
-                  )}
-                </div>
-              </section>
-            );
-          })}
-        </div>
+        filteredItems.length ? (
+          <div className="todo-list" aria-label="TODO list">
+            <div className="todo-list-heading" aria-hidden="true">
+              <span>Task</span><span>Priority</span><span>Availability</span><span>Category</span><span />
+            </div>
+            {filteredItems.map((item) => {
+              const selected = selectedTodoId === item.id;
+              const status = todoStatus(item.dependencies);
+              return (
+                <article
+                  className={`todo-card${status === "blocked" ? " blocked" : ""}${selected ? " selected" : ""}`}
+                  key={item.id}
+                >
+                  <button
+                    aria-haspopup="dialog"
+                    aria-label={`Open ${item.title}`}
+                    className="todo-summary"
+                    id={`todo-${item.id}`}
+                    onClick={() => setSelectedTodoId(item.id)}
+                    type="button"
+                  >
+                    <span className="todo-primary">
+                      <span className="todo-title">{item.title}</span>
+                      <code>{item.id}</code>
+                    </span>
+                    <span className={`tag priority ${item.priority}`}>{item.priority}</span>
+                    <span className={`availability ${status}`}><span aria-hidden="true" />{status}</span>
+                    <span className="tag category todo-category">{item.category}</span>
+                    <span aria-hidden="true" className="card-open-indicator">›</span>
+                  </button>
+                </article>
+              );
+            })}
+          </div>
+        ) : (
+          <StatusMessage title="No matching TODOs" body="Adjust the filters to see more unfinished work." />
+        )
       ) : (
         <StatusMessage title="No open TODOs" body="This project has no structured unfinished work." />
       )}
@@ -1550,9 +2024,6 @@ export function PendingReviewPanel({
         count={proposals.length}
         noun="pending proposal"
       />
-      <div className="notice">
-        Review requests do not change project files until you approve them.
-      </div>
       {proposals.length ? (
         <section aria-label="Pending review proposals" className="pending-review-list">
           {proposals.map((proposal) => {
@@ -1561,31 +2032,29 @@ export function PendingReviewPanel({
             return (
               <article className="panel pending-review-card" key={proposal.id}>
                 <header>
-                  <div>
-                    <h3>{proposal.proposedEntry.title}</h3>
-                    <div className="detail-window-metadata">
-                      <span className="tag">
-                        {proposal.kind === "todoCompletion"
-                          ? "TODO completion"
-                          : "Working history"}
-                      </span>
-                      {proposal.todo && (
-                        <>
-                          <code>{proposal.todo.id}</code>
-                          <span className={`tag priority ${proposal.todo.priority}`}>
-                            {proposal.todo.priority}
-                          </span>
-                        </>
-                      )}
-                      <span className="tag category">
-                        {proposal.proposedEntry.category}
-                      </span>
-                      <span className="tag">{proposal.proposedEntry.area}</span>
-                    </div>
-                  </div>
-                  <time dateTime={proposal.requestedAt}>
-                    Requested {formatDate(proposal.requestedAt)}
+                  <time className="review-requested-time" dateTime={proposal.requestedAt}>
+                    {formatLocalDateTime(proposal.requestedAt)}
                   </time>
+                  <h3>{proposal.proposedEntry.title}</h3>
+                  <div className="detail-window-metadata">
+                    <span className="tag">
+                      {proposal.kind === "todoCompletion"
+                        ? "TODO completion"
+                        : "Working history"}
+                    </span>
+                    {proposal.todo && (
+                      <>
+                        <code>{proposal.todo.id}</code>
+                        <span className={`tag priority ${proposal.todo.priority}`}>
+                          {proposal.todo.priority}
+                        </span>
+                      </>
+                    )}
+                    <span className="tag category">
+                      {proposal.proposedEntry.category}
+                    </span>
+                    <span className="tag">{proposal.proposedEntry.area}</span>
+                  </div>
                 </header>
                 <section>
                   <p className="section-label">Proposed summary</p>
@@ -1605,7 +2074,7 @@ export function PendingReviewPanel({
                     {busy ? "Reviewing…" : "Reject"}
                   </button>
                   <button
-                    className="primary-button"
+                    className="primary-button approve-button"
                     disabled={reviewInProgress}
                     onClick={() => onApprove(proposal.id)}
                     type="button"
@@ -1885,6 +2354,19 @@ function getPullUnavailableReason(git: GitInfo): string | null {
   return null;
 }
 
+function getCommitUnavailableReason(git: GitInfo): string | null {
+  if (!git.isRepository) return "Commit is available only for Git repositories";
+  if (git.dirty !== true) return "There are no project changes to commit";
+  return null;
+}
+
+function getPushUnavailableReason(git: GitInfo): string | null {
+  if (!git.isRepository) return "Push is available only for Git repositories";
+  if (!git.branch || git.branch.startsWith("Detached at ")) return "Push requires a checked-out branch";
+  if (!git.upstream) return "Push requires an upstream branch";
+  return null;
+}
+
 function CenteredMessage({ title, body, action }: { title: string; body?: string; action?: React.ReactNode }) {
   return <div className="centered-message"><div className="projector-mark">P</div><h2>{title}</h2>{body && <p>{body}</p>}{action}</div>;
 }
@@ -1914,8 +2396,13 @@ function formatLocalDateTime(value: string): string {
       });
 }
 
-function todoStatus(dependencies: string[]): "planned" | "blocked" {
-  return dependencies.length > 0 ? "blocked" : "planned";
+function todoStatus(dependencies: string[]): "available" | "blocked" {
+  return dependencies.length > 0 ? "blocked" : "available";
+}
+
+function todoSequence(id: string): number {
+  const match = /^TODO-(\d+)$/.exec(id);
+  return match ? Number.parseInt(match[1], 10) : 0;
 }
 
 function formatRelative(value: string | null): string {

@@ -202,6 +202,7 @@ pub struct CompleteTodoResult {
 #[serde(rename_all = "camelCase")]
 pub struct ProjectDocuments {
     pub readme: DocumentContent,
+    pub agents: DocumentContent,
     pub startup: DocumentContent,
     pub todo: DocumentContent,
     pub working_history: DocumentContent,

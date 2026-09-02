@@ -208,3 +208,29 @@ Added a concise Startup tab that safely renders project-owned STARTUP.md content
 ### Limitations
 
 Existing projects must add STARTUP.md to the project root or docs directory.
+
+## 2026-08-15 11:21 — Narrow STARTUP.md project launcher
+
+- Category: feature
+- Area: startup-launcher
+
+### Summary
+
+Added a sidebar Start action below the folder button. It resolves STARTUP.md only for a registered project, launches each fenced powershell block in a separate visible PowerShell console rooted at that project, and then opens deduplicated HTTP(S) links found outside code blocks. Added focused Rust parser coverage, React interaction coverage, updated project templates, and documented the runtime boundary.
+
+### Limitations
+
+The launcher intentionally does not validate commands, wait for website readiness, track or stop processes, or provide restart and other runtime controls. Launched consoles remain the user's responsibility.
+
+## 2026-08-23 16:56 — Polish frontend visual system and interactions
+
+- Category: feature
+- Area: frontend
+
+### Summary
+
+Refined Projector with a denser Linear-inspired visual system, clearer navigation hierarchy, responsive hover and press feedback, animated tab, dialog, refresh, and toast transitions, improved form focus states, and reduced-motion support.
+
+### Limitations
+
+In-app browser visual QA was unavailable in this session; the production build and 27 frontend interaction tests passed.

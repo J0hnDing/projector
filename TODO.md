@@ -1,54 +1,43 @@
-## TODO-001: Design an explicitly permissioned runtime-management service for starting, stopping, restarting, and building projects. Keep it separate from the read-only observer and require deliberate user authorization before implementation.
+## TODO-001: Define the security and lifecycle design for a permissioned runtime-management service
 
 - Priority: low
 - Category: research
-- Area: unknown
+- Area: runtime-management
 - Dependencies: none
-- Rationale: unknown
+- Rationale: Projector's narrow Startup launcher intentionally does not own or track processes. Stop, restart, and build controls require an explicit trust boundary, authorization model, and lifecycle owner before they can be considered for implementation.
 
 -Acceptance Criteria:
-unknown
+Document the proposed service boundary, user-authorization flow, permitted operations, process ownership, restart recovery, failure handling, and test strategy. Keep the service separate from the observer and existing Startup launcher, and identify any Tauri capabilities or subprocess permissions it would require. Do not implement runtime controls as part of this research task.
 
-## TODO-002: Add runtime health and log observation only after the runtime security model is defined.
+## TODO-002: Add bounded health and log observation for managed project processes
 
 - Priority: low
 - Category: feature
-- Area: unknown
-- Dependencies: none
-- Rationale: unknown
+- Area: runtime-management
+- Dependencies: TODO-001
+- Rationale: Health and logs are meaningful only when Projector has an approved runtime service with explicit ownership of the processes being observed.
 
 -Acceptance Criteria:
-unknown
+Observe only processes started and owned by the approved runtime-management service. Require deliberate user authorization, bound log retention and resource use, represent unavailable and stale states clearly, avoid exposing secrets, and cover startup, shutdown, restart, failure, and recovery behavior with backend and UI tests.
 
-## TODO-003: Add registry import/export and support relocating a registered path.
+## TODO-003: Add registry backup, restore, and registered-path relocation
 
 - Priority: low
 - Category: feature
-- Area: unknown
+- Area: registry
 - Dependencies: none
-- Rationale: unknown
+- Rationale: Users currently have no supported way to preserve their registered-project list across installations or reconnect a registry entry after moving its project directory.
 
 -Acceptance Criteria:
-unknown
+Export and restore a versioned registry-metadata format without copying project content or private application state. Validate and canonicalize every restored or relocated path, reject paths that are missing, duplicated, or outside the directory explicitly selected by the user, preserve stable project IDs where safe, and never edit or delete either the old or new project directory. Cover malformed input, conflicts, inaccessible paths, rollback, and successful relocation with Rust and UI tests.
 
-## TODO-004: Evaluate configurable document names after real-world MVP usage.
-
-- Priority: low
-- Category: research
-- Area: unknown
-- Dependencies: none
-- Rationale: unknown
-
--Acceptance Criteria:
-unknown
-
-## TODO-005: Add platform release signing and automated installer publication.
+## TODO-005: Automate signed Windows installer publication
 
 - Priority: low
 - Category: feature
-- Area: unknown
+- Area: release
 - Dependencies: none
-- Rationale: unknown
+- Rationale: Windows release builds are currently manual and unsigned, which makes releases harder to reproduce and gives users no publisher verification.
 
 -Acceptance Criteria:
-unknown
+On a versioned release, build the NSIS installer with the project-local Tauri toolchain, sign it using credentials supplied only through the release environment, verify the signature before publication, and publish the installer with checksums and release notes. Keep pull requests and untrusted builds unable to access signing credentials, document certificate rotation and release recovery, and test the workflow without requiring production credentials.

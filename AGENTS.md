@@ -17,7 +17,7 @@ Preserve these boundaries:
 - Do not add cloud synchronization, analytics, Kanban features, generic document editing, project execution, or team features unless a later milestone explicitly requests them.
 - Projector is authoritative for structured TODO and working-history mutations. Agents use the narrow loopback API; they must not directly edit `TODO.md` or `WORK_HISTORY.md`.
 
-Project execution is out of scope for the current MVP, but it is a valid future product direction. Do not add start, stop, restart, build, test, or other runtime controls as an incidental change. A future milestone may add them through a separate, explicitly permissioned service with clear user authorization, lifecycle ownership, failure handling, and tests.
+Broader project execution remains out of scope for the current MVP. Do not add stop, restart, build, test, process tracking, or other runtime controls as an incidental change. A future milestone may add them through a separate, explicitly permissioned service with clear user authorization, lifecycle ownership, failure handling, and tests.
 
 The allowed subprocesses are the existing bounded background fetch:
 
@@ -31,7 +31,15 @@ and the explicit manual fast-forward pull:
 git pull --ff-only --no-rebase --recurse-submodules=no
 ```
 
-Keep fetch non-blocking, deduplicated per project, limited to 30 seconds, and failure-tolerant. Keep pull limited to 30 seconds, deduplicated against other Git synchronization for the project, and available only for a registered repository with an attached upstream branch and clean working tree. Pull must never merge, rebase, recurse into submodules, or prompt for credentials. Push, checkout, broader Git workflows, and runtime management require a separate explicit product decision and narrowly scoped permission and safety design. Do not obtain Git capability by adding general shell or process permissions to the Tauri frontend.
+The explicit Push action may run only:
+
+```text
+git push --porcelain
+```
+
+The explicitly user-triggered Start action is also allowed. It reads only the discovered `STARTUP.md` beneath the registered project root, starts each fenced `powershell` block without command validation in a separate visible PowerShell console with that root as the working directory, then opens HTTP(S) links found outside code blocks. Keep it ID-based and backend-owned. Do not add command validation, arbitrary command/path inputs, process tracking, stop/restart controls, readiness checks, or hidden process ownership to this narrow launcher.
+
+Keep fetch non-blocking, deduplicated per project, limited to 30 seconds, and failure-tolerant. Keep pull limited to 30 seconds, deduplicated against other Git synchronization for the project, and available only for a registered repository with an attached upstream branch and clean working tree. Pull must never merge, rebase, recurse into submodules, or prompt for credentials. The explicit Commit action stages all changes and creates one libgit2 commit from the user-entered message without executing hooks. Push is limited to 30 seconds and the current attached branch's configured upstream; it must never force, create an upstream, push tags, or prompt for credentials. Checkout, broader Git workflows, and runtime management require a separate explicit product decision and narrowly scoped permission and safety design. Do not obtain Git capability by adding general shell or process permissions to the Tauri frontend.
 
 ## Architecture
 
@@ -44,7 +52,8 @@ Keep fetch non-blocking, deduplicated per project, limited to 30 seconds, and fa
 - `src-tauri/src/project_state.rs` owns the shared TODO/history parser, validator, deterministic writer, and mutation service.
 - `src-tauri/src/agent_api.rs` exposes that service through the loopback-only agent API.
 - `src-tauri/src/migration.rs` owns the bounded direct-child project migration and `AGENTS.md` updates.
-- `src-tauri/src/git_sync.rs` owns the narrow background fetch, manual fast-forward pull, and fetch cache workflows.
+- `src-tauri/src/git_sync.rs` owns the narrow background fetch, manual fast-forward pull, commit, push, and fetch cache workflows.
+- `src-tauri/src/startup.rs` owns the narrow `STARTUP.md` PowerShell and website launcher.
 - `src-tauri/src/watcher.rs` owns registered-root filesystem notifications.
 - `src-tauri/capabilities/default.json` must remain minimal.
 
@@ -57,6 +66,7 @@ Rust models serialize with camel-case field names. Keep `src/types.ts`, Tauri co
 Recognize filenames case-insensitively with project-root precedence over `docs/`:
 
 - `README.md`
+- `AGENTS.md`
 - `STARTUP.md`
 - `TODO.md`
 - `WORK_HISTORY.md`
@@ -110,7 +120,7 @@ Do not edit generated output under `node_modules/`, `dist/`, or `src-tauri/targe
 - Keep `README.md` aligned with supported behavior, storage, security boundaries, setup, and known limitations.
 - Record unfinished or intentionally deferred work in `TODO.md`.
 - Record notable completed behavior changes in `WORK_HISTORY.md`.
-- Keep runtime management and broader Git workflows beyond fetch and fast-forward-only pull documented as future, permissioned work until a milestone authorizes their implementation.
+- Keep runtime management and broader Git workflows beyond fetch, fast-forward-only pull, all-change commit, and current-upstream push documented as future, permissioned work until a milestone authorizes their implementation.
 
 Preserve unrelated user changes in the working tree and keep each change tightly scoped to the request.
 
@@ -124,7 +134,7 @@ Use Projector's local API at `http://127.0.0.1:48721/v1`. Projector must be runn
 - `POST /projects/{projectId}/todos/{todoId}/complete`: `summary` and `limitations`; returns a pending proposal with `id`, `projectId`, `requestedAt`, `kind: "todoCompletion"`, the `todo` snapshot, and `proposedEntry`.
 - `POST /projects/{projectId}/work-history`: `title`, `category`, `area`, `summary`, and `limitations`; returns a pending proposal with `id`, `projectId`, `requestedAt`, `kind: "workHistory"`, `todo: null`, and `proposedEntry`.
 
-Use `POST /projects/{projectId}/todos` to record unfinished actionable work. Use `POST /projects/{projectId}/todos/{todoId}/complete` when that TODO is finished. Use `POST /projects/{projectId}/work-history` only for notable, independent, completed work that was not represented by an open TODO. 
+Use `POST /projects/{projectId}/todos` to record unfinished actionable work. Use `POST /projects/{projectId}/todos/{todoId}/complete` when that TODO is finished. Use `POST /projects/{projectId}/work-history` only for notable, independent, completed work that was not represented by an open TODO. Do not add multiple working histories in one session
 Send JSON with camel-case field names. Use an empty array when a TODO has no dependencies and use `none` when there are no known limitations.
 ## Subagents
 

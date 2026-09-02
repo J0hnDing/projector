@@ -14,6 +14,7 @@ import type { CodexMonitoringSnapshot, CompletionProposal, ProjectDetail, Subage
 
 vi.mock("./api", () => ({
   listProjects: vi.fn(),
+  reorderProject: vi.fn(),
   registerProject: vi.fn(),
   createProject: vi.fn(),
   getSubagentSettings: vi.fn(),
@@ -29,8 +30,11 @@ vi.mock("./api", () => ({
   refreshProject: vi.fn(),
   refreshProjects: vi.fn(),
   pullProject: vi.fn(),
+  commitProject: vi.fn(),
+  pushProject: vi.fn(),
   openExternalUrl: vi.fn(),
   openProjectRoot: vi.fn(),
+  startProject: vi.fn(),
   approveCompletion: vi.fn(),
   rejectCompletion: vi.fn(),
   listPendingReviews: vi.fn().mockResolvedValue([]),
@@ -66,6 +70,7 @@ const detail: ProjectDetail = {
   },
   documents: {
     readme: { name: "README.md", relativePath: "README.md", status: "available", content: "# Hello", modifiedAt: null, truncated: false, error: null },
+    agents: { name: "AGENTS.md", relativePath: "AGENTS.md", status: "available", content: "# Agent guidance", modifiedAt: null, truncated: false, error: null },
     startup: { name: "STARTUP.md", relativePath: "STARTUP.md", status: "available", content: "# Start locally\n\n```powershell\nnpm run tauri dev\n```", modifiedAt: null, truncated: false, error: null },
     todo: { name: "TODO.md", relativePath: null, status: "missing", content: null, modifiedAt: null, truncated: false, error: null },
     workingHistory: { name: "WORK_HISTORY.md", relativePath: null, status: "missing", content: null, modifiedAt: null, truncated: false, error: null },
@@ -132,6 +137,7 @@ const workHistoryProposal: CompletionProposal = {
 
 const subagentSettings: SubagentSettings = {
   version: 1,
+  customSection: "## Custom instructions\n\nKeep changes calm and focused.",
   projectorSection: "## Projector\n\nUse the local Projector API.",
   subagentsSection: "## Subagents\n\nUse the lowest capable worker tier.",
   workerLow: {
@@ -217,10 +223,13 @@ const linkedCodexMonitoring: CodexMonitoringSnapshot = {
 describe("App", () => {
   beforeEach(() => {
     vi.mocked(api.listProjects).mockReset();
+    vi.mocked(api.reorderProject).mockReset();
     vi.mocked(api.openProject).mockReset();
     vi.mocked(api.refreshProject).mockReset();
     vi.mocked(api.refreshProjects).mockReset();
     vi.mocked(api.pullProject).mockReset();
+    vi.mocked(api.commitProject).mockReset();
+    vi.mocked(api.pushProject).mockReset();
     vi.mocked(api.openProjectRoot).mockReset();
     vi.mocked(api.approveCompletion).mockReset();
     vi.mocked(api.rejectCompletion).mockReset();
@@ -235,6 +244,7 @@ describe("App", () => {
     vi.mocked(api.linkCodexSession).mockReset();
     vi.mocked(api.unlinkCodexSession).mockReset();
     vi.mocked(api.listProjects).mockResolvedValue([]);
+    vi.mocked(api.reorderProject).mockResolvedValue([]);
     vi.mocked(api.refreshProjects).mockResolvedValue([]);
     vi.mocked(api.listPendingReviews).mockResolvedValue([]);
     vi.mocked(api.getSubagentSettings).mockResolvedValue(subagentSettings);
@@ -250,6 +260,7 @@ describe("App", () => {
     vi.mocked(api.listCodexSessions).mockResolvedValue({ detectedSessions: [], linkedSessions: [] });
     vi.mocked(api.linkCodexSession).mockResolvedValue(linkedCodexMonitoring);
     vi.mocked(api.unlinkCodexSession).mockResolvedValue(detectedCodexMonitoring);
+    vi.mocked(api.startProject).mockResolvedValue({ scriptsStarted: 1, websitesOpened: 0 });
   });
 
   it("shows a clear first-run state", async () => {
@@ -264,12 +275,39 @@ describe("App", () => {
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "Example" })).toBeInTheDocument();
-    expect(screen.getAllByText("main")).toHaveLength(2);
+    expect(screen.getByText("main")).toBeInTheDocument();
+    expect(screen.getByText("Synched")).toBeInTheDocument();
+    expect(screen.queryByText("origin/main")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("tab", { name: "AGENTS.md" }));
+    expect(screen.getByRole("heading", { name: "Agent guidance" })).toBeInTheDocument();
     await userEvent.click(screen.getByRole("tab", { name: "Startup" }));
     expect(screen.getByRole("heading", { name: "Start locally" })).toBeInTheDocument();
     expect(screen.getByText("npm run tauri dev")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("tab", { name: "TODO" }));
     expect(screen.getByText("TODO.md was not found")).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Codex" })).not.toBeInTheDocument();
+    expect(document.querySelectorAll(".project-active-indicator")).toHaveLength(1);
+    expect(document.querySelectorAll(".tab-active-indicator")).toHaveLength(1);
+  });
+
+  it("moves projects in the persisted sidebar order from Appearance settings", async () => {
+    const second = { ...detail.project, id: "04a2026e-313e-4f12-8654-d7386dc78ec3", name: "Second" };
+    vi.mocked(api.listProjects).mockResolvedValue([detail.project, second]);
+    vi.mocked(api.openProject).mockResolvedValue(detail);
+    vi.mocked(api.reorderProject).mockResolvedValue([second, detail.project]);
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "Example" });
+    expect(screen.queryByRole("button", { name: "Move Second up" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Settings" }));
+    await userEvent.selectOptions(screen.getByLabelText("Project to reorder"), second.id);
+    await userEvent.click(screen.getByRole("button", { name: "Move up" }));
+
+    await waitFor(() => expect(api.reorderProject).toHaveBeenCalledWith(second.id, 0));
+    const projectButtons = within(screen.getByRole("navigation", { name: "Registered projects" }))
+      .getAllByRole("button")
+      .filter((button) => button.classList.contains("project-list-select"));
+    expect(projectButtons.map((button) => button.querySelector(".project-list-name")?.textContent)).toEqual(["Second", "Example"]);
   });
 
   it("opens a registered project's root folder from its sidebar panel", async () => {
@@ -282,6 +320,30 @@ describe("App", () => {
     await user.click(await screen.findByRole("button", { name: "Open Example folder" }));
 
     expect(api.openProjectRoot).toHaveBeenCalledWith(detail.project.id);
+  });
+
+  it("starts a registered project from the button below its folder action", async () => {
+    vi.mocked(api.listProjects).mockResolvedValue([detail.project]);
+    vi.mocked(api.openProject).mockResolvedValue(detail);
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "Start Example" }));
+
+    expect(api.startProject).toHaveBeenCalledWith(detail.project.id);
+  });
+
+  it("surfaces startup failures and restores the Start action", async () => {
+    vi.mocked(api.listProjects).mockResolvedValue([detail.project]);
+    vi.mocked(api.openProject).mockResolvedValue(detail);
+    vi.mocked(api.startProject).mockRejectedValue("STARTUP.md was not found");
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "Start Example" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("STARTUP.md was not found");
+    expect(screen.getByRole("button", { name: "Start Example" })).toBeEnabled();
   });
 
   it("registers a selected directory", async () => {
@@ -341,6 +403,8 @@ describe("App", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Settings" }));
     expect(await screen.findByRole("heading", { name: "Project settings" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("tab", { name: "AGENTS.md" }));
+    expect(screen.getByLabelText("AGENTS.md custom instructions")).toHaveValue(subagentSettings.customSection);
     expect(screen.getByLabelText("AGENTS.md Projector section")).toHaveValue(subagentSettings.projectorSection);
     expect(screen.getByLabelText("Worker low model")).toHaveValue("gpt-5.6-luna");
     expect(screen.getByLabelText("Worker low reasoning effort")).toHaveValue("medium");
@@ -361,11 +425,25 @@ describe("App", () => {
     expect(await screen.findByRole("status")).toHaveTextContent("Project and subagent settings saved.");
   });
 
+  it("persists light and dark appearance choices", async () => {
+    window.localStorage.removeItem("projector.appearance");
+    render(<App />);
+
+    await userEvent.click(screen.getByRole("button", { name: "Settings" }));
+    await screen.findByRole("heading", { name: "Appearance" });
+    expect(screen.getByRole("button", { name: "Dark" })).toHaveAttribute("aria-pressed", "true");
+    await userEvent.click(screen.getByRole("button", { name: "Light" }));
+
+    expect(document.documentElement.dataset.appearance).toBe("light");
+    expect(window.localStorage.getItem("projector.appearance")).toBe("light");
+  });
+
   it("previews generated files and resets bundled defaults", async () => {
     render(<App />);
 
     await userEvent.click(screen.getByRole("button", { name: "Settings" }));
     await screen.findByRole("heading", { name: "Project settings" });
+    await userEvent.click(screen.getByRole("tab", { name: "AGENTS.md" }));
     await userEvent.click(screen.getByRole("button", { name: "Preview generated files" }));
 
     const preview = await screen.findByLabelText("Generated file preview");
@@ -390,6 +468,7 @@ describe("App", () => {
     await screen.findByRole("heading", { name: "Example" });
     await userEvent.click(screen.getByRole("button", { name: "Settings" }));
     await screen.findByRole("heading", { name: "Project settings" });
+    await userEvent.click(screen.getByRole("tab", { name: "AGENTS.md" }));
     await userEvent.click(screen.getByRole("checkbox", { name: /Example/ }));
     await userEvent.click(screen.getByRole("button", { name: "Save and migrate selected" }));
 
@@ -411,7 +490,7 @@ describe("App", () => {
     render(<App />);
 
     await screen.findByRole("heading", { name: "Example" });
-    await userEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    await userEvent.click(screen.getByRole("button", { name: "Refresh projects" }));
     await waitFor(() => expect(api.refreshProjects).toHaveBeenCalledOnce());
   });
 
@@ -426,32 +505,36 @@ describe("App", () => {
     await waitFor(() => expect(api.pullProject).toHaveBeenCalledWith(detail.project.id));
   });
 
-  it("manually links a detected Codex session from the project tab", async () => {
-    vi.mocked(api.listProjects).mockResolvedValue([detail.project]);
-    vi.mocked(api.openProject).mockResolvedValue(detail);
-    vi.mocked(api.listCodexSessions).mockResolvedValue(detectedCodexMonitoring);
+  it("commits all project changes with the entered message", async () => {
+    const dirtyDetail = {
+      ...detail,
+      project: { ...detail.project, git: { ...detail.project.git, dirty: true } },
+    };
+    vi.mocked(api.listProjects).mockResolvedValue([dirtyDetail.project]);
+    vi.mocked(api.openProject).mockResolvedValue(dirtyDetail);
+    vi.mocked(api.commitProject).mockResolvedValue(detail);
     render(<App />);
 
-    await screen.findByRole("heading", { name: "Example" });
-    await userEvent.click(screen.getByRole("tab", { name: "Codex" }));
-    expect(await screen.findByLabelText("Detected Codex session")).toHaveValue("session-detected");
-    await userEvent.click(screen.getByRole("button", { name: "Link session" }));
-    await waitFor(() => expect(api.linkCodexSession).toHaveBeenCalledWith(
+    await userEvent.click(await screen.findByRole("button", { name: "Commit" }));
+    await userEvent.type(screen.getByLabelText("Commit message"), "Polish project UI");
+    await userEvent.click(within(screen.getByRole("dialog", { name: "Commit changes" })).getByRole("button", { name: "Commit" }));
+
+    await waitFor(() => expect(api.commitProject).toHaveBeenCalledWith(
       detail.project.id,
-      "session-detected",
+      "Polish project UI",
     ));
-    expect(await screen.findByText("worker_low")).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Commit changes" })).not.toBeInTheDocument();
   });
 
-  it("surfaces Codex monitoring API failures", async () => {
+  it("pushes only through the registered project action", async () => {
     vi.mocked(api.listProjects).mockResolvedValue([detail.project]);
     vi.mocked(api.openProject).mockResolvedValue(detail);
-    vi.mocked(api.listCodexSessions).mockRejectedValue(new Error("monitor offline"));
+    vi.mocked(api.pushProject).mockResolvedValue(detail);
     render(<App />);
 
-    await screen.findByRole("heading", { name: "Example" });
-    await userEvent.click(screen.getByRole("tab", { name: "Codex" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("monitor offline");
+    await userEvent.click(await screen.findByRole("button", { name: "Push" }));
+
+    await waitFor(() => expect(api.pushProject).toHaveBeenCalledWith(detail.project.id));
   });
 
   it("disables pull when the working tree is dirty", async () => {
@@ -617,7 +700,7 @@ describe("structured project state", () => {
     expect(onReject).toHaveBeenCalledWith("9cc169ab-ac65-4b2b-83a7-d91140ea45a2");
   });
 
-  it("shows four compact priority boxes and opens TODO details in a closable window", async () => {
+  it("shows TODOs in a compact list and opens details in a closable window", async () => {
     render(
       <TodoPanel
         source={{ ...detail.documents.todo, status: "available", relativePath: "TODO.md" }}
@@ -648,11 +731,12 @@ describe("structured project state", () => {
     );
 
     expect(screen.getByRole("button", { name: "Open Ship state management" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "critical" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "high" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "medium" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "low" })).toBeInTheDocument();
+    const todoList = screen.getByLabelText("TODO list");
+    expect(screen.getByText("critical")).toBeInTheDocument();
     expect(screen.getByText("blocked")).toBeInTheDocument();
+    expect(within(todoList).getByText("Category")).toBeInTheDocument();
+    expect(within(todoList).getByText("feature")).toBeInTheDocument();
+    expect(within(todoList).queryByText("project-state")).not.toBeInTheDocument();
     expect(screen.queryByText("Agents need one safe contract.")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("TODO dependency relationships")).not.toBeInTheDocument();
 
@@ -668,7 +752,7 @@ describe("structured project state", () => {
     expect(screen.getByText("Preserved unrecognized source content")).toBeInTheDocument();
   });
 
-  it("filters TODOs by category while preserving the priority columns", async () => {
+  it("filters TODOs by priority, availability, and category and sorts by added order", async () => {
     render(
       <TodoPanel
         source={{ ...detail.documents.todo, status: "available", relativePath: "TODO.md" }}
@@ -691,7 +775,7 @@ describe("structured project state", () => {
               priority: "low",
               category: "research",
               area: "product",
-              dependencies: [],
+              dependencies: ["TODO-001"],
               rationale: "Clarify the design.",
               acceptanceCriteria: "The decision is documented.",
             },
@@ -703,15 +787,34 @@ describe("structured project state", () => {
     );
 
     const category = screen.getByLabelText("Category");
+    const priority = screen.getByLabelText("Priority");
+    const availability = screen.getByLabelText("Availability");
+    const added = screen.getByLabelText("Added");
     expect(category).toHaveValue("all");
+    expect(screen.getAllByRole("button", { name: /^Open / }).map((button) => button.getAttribute("aria-label"))).toEqual([
+      "Open Research the workflow",
+      "Open Build the feature",
+    ]);
+
+    await userEvent.selectOptions(added, "oldest");
+    expect(screen.getAllByRole("button", { name: /^Open / }).map((button) => button.getAttribute("aria-label"))).toEqual([
+      "Open Build the feature",
+      "Open Research the workflow",
+    ]);
+
+    await userEvent.selectOptions(priority, "high");
     expect(screen.getByRole("button", { name: "Open Build the feature" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Open Research the workflow" })).not.toBeInTheDocument();
+
+    await userEvent.selectOptions(priority, "all");
+    await userEvent.selectOptions(availability, "blocked");
+    expect(screen.queryByRole("button", { name: "Open Build the feature" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Open Research the workflow" })).toBeInTheDocument();
 
+    await userEvent.selectOptions(availability, "all");
     await userEvent.selectOptions(category, "research");
     expect(screen.queryByRole("button", { name: "Open Build the feature" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Open Research the workflow" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "critical" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "low" })).toBeInTheDocument();
 
     await userEvent.selectOptions(category, "all");
     expect(screen.getByRole("button", { name: "Open Build the feature" })).toBeInTheDocument();

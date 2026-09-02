@@ -65,6 +65,7 @@ pub fn detail(entry: &RegistryEntry, fetch: &GitFetchSnapshot) -> ProjectDetail 
 pub fn observe_documents(root: &Path) -> ProjectDocuments {
     ProjectDocuments {
         readme: read_document(root, "README.md", &["README.md"]),
+        agents: read_document(root, "AGENTS.md", &["AGENTS.md"]),
         startup: read_document(root, "STARTUP.md", &["STARTUP.md"]),
         todo: read_document(root, "TODO.md", &["TODO.md"]),
         working_history: read_document(
@@ -519,6 +520,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         fs::create_dir(temp.path().join("docs")).unwrap();
         fs::write(temp.path().join("README.md"), "# Root readme").unwrap();
+        fs::write(temp.path().join("AGENTS.md"), "# Agent guidance").unwrap();
         fs::write(
             temp.path().join("docs/STARTUP.md"),
             "# Startup\n\n```powershell\nnpm run dev\n```",
@@ -529,6 +531,10 @@ mod tests {
         let documents = observe_documents(temp.path());
         assert_eq!(documents.readme.relative_path.as_deref(), Some("README.md"));
         assert_eq!(documents.readme.content.as_deref(), Some("# Root readme"));
+        assert_eq!(
+            documents.agents.content.as_deref(),
+            Some("# Agent guidance")
+        );
         assert_eq!(
             documents.startup.relative_path.as_deref(),
             Some("docs/STARTUP.md")

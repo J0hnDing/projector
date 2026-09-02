@@ -1,4 +1,9 @@
 version = 1
+custom_section = """
+## Custom instructions
+
+Add project-specific guidance here.
+"""
 projector_section = """
 ## Projector
 

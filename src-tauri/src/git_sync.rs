@@ -10,7 +10,7 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
-use git2::Repository;
+use git2::{ErrorCode, IndexAddOption, Repository};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 use uuid::Uuid;
@@ -19,6 +19,7 @@ use crate::models::{GitFetchStatus, RegistryEntry};
 
 const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 const PULL_TIMEOUT: Duration = Duration::from_secs(30);
+const PUSH_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Debug, Default)]
 pub struct GitFetchSnapshot {
@@ -160,6 +161,42 @@ impl GitSyncManager {
                 },
                 true,
             );
+        }
+        outcome
+    }
+
+    pub fn commit(&self, entry: &RegistryEntry, message: &str) -> Result<(), String> {
+        let mut active = self
+            .inner
+            .active
+            .lock()
+            .map_err(|_| "Git synchronization is unavailable".to_string())?;
+        if !active.insert(entry.id) {
+            return Err("A Git operation is already in progress for this project.".into());
+        }
+        drop(active);
+
+        let outcome = commit_repository(&entry.path, message);
+        if let Ok(mut active) = self.inner.active.lock() {
+            active.remove(&entry.id);
+        }
+        outcome
+    }
+
+    pub fn push(&self, entry: &RegistryEntry) -> Result<(), String> {
+        let mut active = self
+            .inner
+            .active
+            .lock()
+            .map_err(|_| "Git synchronization is unavailable".to_string())?;
+        if !active.insert(entry.id) {
+            return Err("A Git operation is already in progress for this project.".into());
+        }
+        drop(active);
+
+        let outcome = push_repository(&entry.path, PUSH_TIMEOUT);
+        if let Ok(mut active) = self.inner.active.lock() {
+            active.remove(&entry.id);
         }
         outcome
     }
@@ -406,6 +443,160 @@ fn pull_repository(root: &Path, timeout: Duration) -> Result<(), String> {
     }
 }
 
+fn commit_repository(root: &Path, message: &str) -> Result<(), String> {
+    let message = message.trim();
+    if message.is_empty() {
+        return Err("Enter a commit message.".into());
+    }
+    if message.len() > 500 || message.contains('\0') {
+        return Err(
+            "The commit message must be at most 500 characters and contain no null bytes.".into(),
+        );
+    }
+
+    let repo = Repository::open(root)
+        .map_err(|error| format!("The repository is unavailable: {error}"))?;
+    if !repository_is_within_root(&repo, root) {
+        return Err("Git metadata is outside the registered project directory.".into());
+    }
+    if repo.state() != git2::RepositoryState::Clean {
+        return Err("Commit is unavailable while another Git operation is unfinished.".into());
+    }
+
+    let mut status_options = git2::StatusOptions::new();
+    status_options
+        .include_ignored(false)
+        .include_untracked(true)
+        .recurse_untracked_dirs(true);
+    if repo
+        .statuses(Some(&mut status_options))
+        .map_err(|error| format!("Unable to inspect the working tree: {error}"))?
+        .is_empty()
+    {
+        return Err("There are no changes to commit.".into());
+    }
+
+    let signature = repo.signature().map_err(|_| {
+        "Git user.name and user.email must be configured before committing.".to_string()
+    })?;
+    let mut index = repo
+        .index()
+        .map_err(|error| format!("Unable to open the Git index: {error}"))?;
+    index
+        .add_all(["*"].iter(), IndexAddOption::DEFAULT, None)
+        .map_err(|error| format!("Unable to stage project changes: {error}"))?;
+    if index.has_conflicts() {
+        return Err("Commit is unavailable while the Git index has conflicts.".into());
+    }
+    index
+        .write()
+        .map_err(|error| format!("Unable to write the Git index: {error}"))?;
+    let tree_id = index
+        .write_tree()
+        .map_err(|error| format!("Unable to prepare the commit tree: {error}"))?;
+    let tree = repo
+        .find_tree(tree_id)
+        .map_err(|error| format!("Unable to read the commit tree: {error}"))?;
+
+    let parent = match repo.head() {
+        Ok(head) => Some(
+            head.peel_to_commit()
+                .map_err(|error| format!("Unable to read the current commit: {error}"))?,
+        ),
+        Err(error) if matches!(error.code(), ErrorCode::UnbornBranch | ErrorCode::NotFound) => None,
+        Err(error) => return Err(format!("Unable to read the current branch: {error}")),
+    };
+    let parents = parent.iter().collect::<Vec<_>>();
+    repo.commit(
+        Some("HEAD"),
+        &signature,
+        &signature,
+        message,
+        &tree,
+        &parents,
+    )
+    .map_err(|error| format!("Unable to create the commit: {error}"))?;
+    Ok(())
+}
+
+fn push_repository(root: &Path, timeout: Duration) -> Result<(), String> {
+    let repo = Repository::open(root)
+        .map_err(|error| format!("The repository is unavailable: {error}"))?;
+    if !repository_is_within_root(&repo, root) {
+        return Err("Git metadata is outside the registered project directory.".into());
+    }
+    let head = repo
+        .head()
+        .map_err(|_| "The current Git branch could not be determined.".to_string())?;
+    if !head.is_branch() {
+        return Err("Push is unavailable while the repository has a detached HEAD.".into());
+    }
+    let branch_name = head
+        .shorthand()
+        .map_err(|_| "The current Git branch could not be determined.".to_string())?;
+    repo.find_branch(branch_name, git2::BranchType::Local)
+        .and_then(|branch| branch.upstream())
+        .map_err(|_| "The current branch does not have an upstream branch.".to_string())?;
+    drop(head);
+    drop(repo);
+
+    let mut child = Command::new("git")
+        .args(["push", "--porcelain"])
+        .current_dir(root)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GCM_INTERACTIVE", "Never")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("Unable to start Git push: {error}"))?;
+
+    let stderr = child.stderr.take();
+    let stderr_reader = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        if let Some(mut stderr) = stderr {
+            let _ = stderr.read_to_end(&mut bytes);
+        }
+        String::from_utf8_lossy(&bytes).trim().to_string()
+    });
+    let started = Instant::now();
+    let exit_status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if started.elapsed() < timeout => thread::sleep(Duration::from_millis(100)),
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("Unable to monitor Git push: {error}"));
+            }
+        }
+    };
+    if exit_status.is_none() {
+        drop(stderr_reader);
+        return Err(format!(
+            "Git push timed out after {} seconds.",
+            timeout.as_secs()
+        ));
+    }
+    let stderr = stderr_reader.join().unwrap_or_default();
+    match exit_status {
+        Some(status) if status.success() => Ok(()),
+        Some(_) if stderr.to_lowercase().contains("non-fast-forward") => {
+            Err("The upstream contains changes that prevent a fast-forward push.".into())
+        }
+        Some(_) => Err(classify_fetch_failure(&stderr)
+            .error
+            .unwrap_or_else(|| "Git push failed.".into())
+            .replace("fetch", "push")),
+        None => unreachable!("the timeout case returns before reading stderr"),
+    }
+}
+
 fn classify_pull_failure(stderr: &str) -> String {
     let lower = stderr.to_lowercase();
     if lower.contains("not possible to fast-forward")
@@ -588,5 +779,68 @@ mod tests {
             fs::read_to_string(checkout.join("version.txt")).unwrap(),
             "two"
         );
+    }
+
+    #[test]
+    fn commit_stages_all_project_changes_without_shell_input() {
+        let temp = tempfile::tempdir().unwrap();
+        git(temp.path(), &["init", "-b", "main"]);
+        git(temp.path(), &["config", "user.name", "Projector Test"]);
+        git(
+            temp.path(),
+            &["config", "user.email", "projector@example.invalid"],
+        );
+        fs::write(temp.path().join("tracked.txt"), "one").unwrap();
+        git(temp.path(), &["add", "tracked.txt"]);
+        git(temp.path(), &["commit", "-m", "Initial"]);
+
+        fs::write(temp.path().join("tracked.txt"), "two").unwrap();
+        fs::write(temp.path().join("new.txt"), "new").unwrap();
+        commit_repository(temp.path(), "Projector commit").unwrap();
+
+        let repo = Repository::open(temp.path()).unwrap();
+        assert_eq!(
+            repo.head().unwrap().peel_to_commit().unwrap().message(),
+            Ok("Projector commit")
+        );
+        let mut options = git2::StatusOptions::new();
+        options.include_untracked(true).recurse_untracked_dirs(true);
+        assert!(repo.statuses(Some(&mut options)).unwrap().is_empty());
+    }
+
+    #[test]
+    fn push_updates_only_the_configured_upstream() {
+        let temp = tempfile::tempdir().unwrap();
+        let remote = temp.path().join("remote.git");
+        let checkout = temp.path().join("checkout");
+        git(temp.path(), &["init", "--bare", remote.to_str().unwrap()]);
+        fs::create_dir(&checkout).unwrap();
+        git(&checkout, &["init", "-b", "main"]);
+        git(&checkout, &["config", "user.name", "Projector Test"]);
+        git(
+            &checkout,
+            &["config", "user.email", "projector@example.invalid"],
+        );
+        git(
+            &checkout,
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
+        fs::write(checkout.join("version.txt"), "one").unwrap();
+        git(&checkout, &["add", "version.txt"]);
+        git(&checkout, &["commit", "-m", "Initial"]);
+        git(&checkout, &["push", "-u", "origin", "main"]);
+        fs::write(checkout.join("version.txt"), "two").unwrap();
+        git(&checkout, &["add", "version.txt"]);
+        git(&checkout, &["commit", "-m", "Update"]);
+
+        push_repository(&checkout, Duration::from_secs(5)).unwrap();
+
+        let remote_repo = Repository::open_bare(&remote).unwrap();
+        let pushed = remote_repo
+            .find_reference("refs/heads/main")
+            .unwrap()
+            .peel_to_commit()
+            .unwrap();
+        assert_eq!(pushed.message().unwrap().trim(), "Update");
     }
 }

@@ -15,13 +15,15 @@ Send JSON with camel-case field names. Use an empty array when a TODO has no dep
 
 pub fn new_project_agents(
     project_name: &str,
+    custom_section: &str,
     subagents_section: &str,
     projector_section: &str,
 ) -> String {
     format!(
         "# AGENTS.md instructions for {project_name}\n\n\
 Project files are the source of truth. Keep changes scoped to this project and preserve unrelated work.\n\n\
-{}\n\n{}\n",
+{}\n\n{}\n\n{}\n",
+        custom_section.trim(),
         subagents_section.trim(),
         projector_section.trim()
     )
@@ -30,13 +32,20 @@ Project files are the source of truth. Keep changes scoped to this project and p
 pub fn migrate_agents(
     existing: Option<&str>,
     project_name: &str,
+    custom_section: &str,
     subagents_section: &str,
     projector_section: &str,
 ) -> String {
     let Some(existing) = existing else {
-        return new_project_agents(project_name, subagents_section, projector_section);
+        return new_project_agents(
+            project_name,
+            custom_section,
+            subagents_section,
+            projector_section,
+        );
     };
-    let updated = replace_section(existing, "Subagents", subagents_section);
+    let updated = replace_section(existing, "Custom instructions", custom_section);
+    let updated = replace_section(&updated, "Subagents", subagents_section);
     replace_section(&updated, "Projector", projector_section)
 }
 
@@ -81,10 +90,12 @@ mod tests {
         let updated = migrate_agents(
             Some(existing),
             "Example",
+            "## Custom instructions\n\nUse concise prose.",
             "## Subagents\n\nNew workers.",
             "## Projector\n\nNew API.",
         );
         assert!(updated.contains("## Existing\n\nKeep."));
+        assert!(updated.contains("## Custom instructions\n\nUse concise prose."));
         assert!(updated.contains("## Subagents\n\nNew workers."));
         assert!(updated.contains("## Projector\n\nNew API."));
         assert!(updated.contains("## Later\n\nAlso keep."));

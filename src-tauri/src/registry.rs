@@ -26,6 +26,10 @@ pub enum RegistryError {
     InvalidProjectName(String),
     #[error("A file or folder already exists at the new project path: {0}")]
     ProjectAlreadyExists(String),
+    #[error("Unknown project id: {0}")]
+    UnknownProject(Uuid),
+    #[error("Project position {0} is outside the registered project list")]
+    InvalidProjectPosition(usize),
     #[error("Unable to initialize the Git repository: {0}")]
     Git(#[from] git2::Error),
     #[error("Unable to generate the project's subagent configuration: {0}")]
@@ -131,7 +135,7 @@ impl RegistryStore {
             )?;
             write_new_file(
                 &project.join("STARTUP.md"),
-                b"# Startup\n\nDocument the commands and setup instructions needed to start this project.\n",
+                b"# Startup\n\nPut each command group in its own fenced `powershell` block. Projector starts every block in a separate PowerShell console. Add HTTP(S) website links outside the code blocks for Projector to open after launching the scripts.\n",
             )?;
             for file in subagent_settings.generated_files(&name)? {
                 let path = project.join(file.path);
@@ -163,6 +167,25 @@ impl RegistryStore {
         self.persist(&next)?;
         self.data = next;
         Ok(Some(removed))
+    }
+
+    pub fn reorder(&mut self, id: Uuid, new_index: usize) -> Result<(), RegistryError> {
+        let Some(current_index) = self.data.projects.iter().position(|entry| entry.id == id) else {
+            return Err(RegistryError::UnknownProject(id));
+        };
+        if new_index >= self.data.projects.len() {
+            return Err(RegistryError::InvalidProjectPosition(new_index));
+        }
+        if current_index == new_index {
+            return Ok(());
+        }
+
+        let mut next = self.data.clone();
+        let entry = next.projects.remove(current_index);
+        next.projects.insert(new_index, entry);
+        self.persist(&next)?;
+        self.data = next;
+        Ok(())
     }
 
     pub fn touch(&mut self, id: Uuid) -> Result<RegistryEntry, RegistryError> {
@@ -291,6 +314,46 @@ mod tests {
     }
 
     #[test]
+    fn project_order_is_persisted_and_bounds_checked() {
+        let temp = tempfile::tempdir().unwrap();
+        let registry_path = temp.path().join("registry.json");
+        let first = temp.path().join("first");
+        let second = temp.path().join("second");
+        let third = temp.path().join("third");
+        fs::create_dir(&first).unwrap();
+        fs::create_dir(&second).unwrap();
+        fs::create_dir(&third).unwrap();
+
+        let mut store = RegistryStore::load(registry_path.clone()).unwrap();
+        let first = store.register(&first).unwrap();
+        let second = store.register(&second).unwrap();
+        let third = store.register(&third).unwrap();
+        store.reorder(third.id, 0).unwrap();
+
+        assert_eq!(
+            store
+                .entries()
+                .iter()
+                .map(|entry| entry.id)
+                .collect::<Vec<_>>(),
+            vec![third.id, first.id, second.id]
+        );
+        let reloaded = RegistryStore::load(registry_path).unwrap();
+        assert_eq!(
+            reloaded
+                .entries()
+                .iter()
+                .map(|entry| entry.id)
+                .collect::<Vec<_>>(),
+            vec![third.id, first.id, second.id]
+        );
+        assert!(matches!(
+            store.reorder(first.id, 3),
+            Err(RegistryError::InvalidProjectPosition(3))
+        ));
+    }
+
+    #[test]
     fn invalid_and_file_paths_are_rejected() {
         let temp = tempfile::tempdir().unwrap();
         let mut store = RegistryStore::load(temp.path().join("registry.json")).unwrap();
@@ -320,7 +383,7 @@ mod tests {
         assert_eq!(fs::read_to_string(entry.path.join("TODO.md")).unwrap(), "");
         assert_eq!(
             fs::read_to_string(entry.path.join("STARTUP.md")).unwrap(),
-            "# Startup\n\nDocument the commands and setup instructions needed to start this project.\n"
+            "# Startup\n\nPut each command group in its own fenced `powershell` block. Projector starts every block in a separate PowerShell console. Add HTTP(S) website links outside the code blocks for Projector to open after launching the scripts.\n"
         );
         assert_eq!(
             fs::read_to_string(entry.path.join("WORK_HISTORY.md")).unwrap(),

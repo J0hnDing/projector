@@ -47,6 +47,12 @@ pub struct WorkerAgentSettings {
 pub struct SubagentSettings {
     pub version: u8,
     #[serde(
+        rename = "customSection",
+        alias = "custom_section",
+        default = "default_custom_section"
+    )]
+    pub custom_section: String,
+    #[serde(
         rename = "projectorSection",
         alias = "projector_section",
         default = "default_projector_section"
@@ -158,6 +164,7 @@ impl SubagentSettings {
             path: "AGENTS.md".into(),
             content: new_project_agents(
                 project_name,
+                &self.custom_section,
                 &self.subagents_section,
                 &self.projector_section,
             ),
@@ -207,6 +214,7 @@ pub fn migrate_project_settings(
             migrate_agents(
                 existing.as_deref(),
                 &entry.name,
+                &settings.custom_section,
                 &settings.subagents_section,
                 &settings.projector_section,
             )
@@ -288,6 +296,10 @@ fn default_projector_section() -> String {
     PROJECTOR_SECTION.to_string()
 }
 
+fn default_custom_section() -> String {
+    "## Custom instructions".to_string()
+}
+
 pub fn bundled_defaults() -> Result<SubagentSettings, SubagentSettingsError> {
     let defaults: SubagentSettings = toml::from_str(DEFAULT_SETTINGS)?;
     validate_settings(&defaults, &defaults)?;
@@ -303,6 +315,17 @@ fn validate_settings(
             "unsupported settings version {}",
             settings.version
         )));
+    }
+    let custom_section = settings.custom_section.trim();
+    if !custom_section.starts_with("## Custom instructions") {
+        return Err(SubagentSettingsError::Validation(
+            "the AGENTS.md custom guidance must begin with `## Custom instructions`".into(),
+        ));
+    }
+    if custom_section.len() > 32_000 {
+        return Err(SubagentSettingsError::Validation(
+            "the AGENTS.md custom guidance is too large".into(),
+        ));
     }
     let section = settings.subagents_section.trim();
     if !section.starts_with("## Subagents") {
@@ -427,6 +450,11 @@ mod tests {
     fn bundled_defaults_define_the_requested_worker_tiers() {
         let settings = bundled_defaults().unwrap();
 
+        assert!(
+            settings
+                .custom_section
+                .starts_with("## Custom instructions")
+        );
         assert_eq!(
             settings.projector_section.replace("\r\n", "\n").trim(),
             PROJECTOR_SECTION.replace("\r\n", "\n").trim()
@@ -455,16 +483,18 @@ mod tests {
     }
 
     #[test]
-    fn saved_version_one_settings_without_projector_section_are_upgraded() {
+    fn saved_version_one_settings_without_new_sections_are_upgraded() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("subagent-settings.json");
         let mut value = serde_json::to_value(bundled_defaults().unwrap()).unwrap();
         value.as_object_mut().unwrap().remove("projectorSection");
+        value.as_object_mut().unwrap().remove("customSection");
         fs::write(&path, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
 
         let store = SubagentSettingsStore::load(path).unwrap();
 
         assert_eq!(store.settings().projector_section, PROJECTOR_SECTION);
+        assert_eq!(store.settings().custom_section, "## Custom instructions");
     }
 
     #[test]
@@ -487,6 +517,7 @@ mod tests {
             last_opened: None,
         };
         let mut settings = bundled_defaults().unwrap();
+        settings.custom_section = "## Custom instructions\n\nCustom project guidance.".into();
         settings.projector_section = "## Projector\n\nCustom API guidance.".into();
         settings.subagents_section = "## Subagents\n\nCustom worker guidance.".into();
 
@@ -494,6 +525,7 @@ mod tests {
         assert_eq!(first.updated_files.len(), 4);
         let agents = fs::read_to_string(project.join("AGENTS.md")).unwrap();
         assert!(agents.contains("## Keep\n\nUntouched."));
+        assert!(agents.contains("Custom project guidance."));
         assert!(agents.contains("Custom API guidance."));
         assert!(agents.contains("Custom worker guidance."));
         assert!(project.join("AGENTS.md.projector-backup").exists());
