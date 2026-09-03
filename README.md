@@ -4,7 +4,7 @@
 
 # Projector
 
-### A lightweight, local-first workspace for building and managing software with AI agents.
+### A lightweight, local-first project manager app designed for AI coding agents and vibe coders.
 
 [![Local first](https://img.shields.io/badge/local--first-yes-14b8a6?style=for-the-badge)](#local-first-and-narrowly-permissioned)
 [![Tauri](https://img.shields.io/badge/desktop-Tauri%202-FFC131?style=for-the-badge&logo=tauri&logoColor=111827)](src-tauri/Cargo.toml)
