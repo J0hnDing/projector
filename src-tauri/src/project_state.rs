@@ -156,6 +156,56 @@ impl ProjectStateService {
         Ok(item)
     }
 
+    pub fn delete_todo(
+        &self,
+        project_id: Uuid,
+        root: &Path,
+        todo_id: &str,
+    ) -> Result<TodoItem, ProjectStateError> {
+        let _guard = self
+            .write_lock
+            .lock()
+            .map_err(|_| ProjectStateError::Validation("The state writer is unavailable".into()))?;
+        validate_todo_id(todo_id)?;
+
+        let root = canonical_root(root)?;
+        let path = writable_document_path(&root, TODO_FILE, TODO_ALIASES)?;
+        let original = read_optional(&path)?;
+        let mut document = parse_todo_document(original.as_deref().unwrap_or(""));
+        ensure_mutable_todo_document(&document)?;
+
+        let Some(index) = document.items.iter().position(|item| item.id == todo_id) else {
+            return Err(ProjectStateError::Validation(format!(
+                "TODO {todo_id} does not exist"
+            )));
+        };
+
+        let proposals = self.proposals.lock().map_err(|_| {
+            ProjectStateError::ProposalStorage("The proposal store is unavailable".into())
+        })?;
+        if proposals.proposals.iter().any(|proposal| {
+            proposal.project_id == project_id
+                && proposal
+                    .todo
+                    .as_ref()
+                    .is_some_and(|todo| todo.id == todo_id)
+        }) {
+            return Err(ProjectStateError::Validation(format!(
+                "TODO {todo_id} has a pending completion proposal; reject it before deleting the TODO"
+            )));
+        }
+        drop(proposals);
+
+        let deleted = document.items.remove(index);
+        for item in &mut document.items {
+            item.dependencies.retain(|dependency| dependency != todo_id);
+        }
+        document.warnings = validate_todos(&document.items);
+        ensure_mutable_todo_document(&document)?;
+        atomic_replace(&path, render_todo_document(&document).as_bytes())?;
+        Ok(deleted)
+    }
+
     pub fn add_work_history(
         &self,
         project_id: Uuid,
@@ -1858,5 +1908,71 @@ mod tests {
             .collect();
         assert_eq!(ids.len(), 8);
         assert_eq!(service.inspect(&root).unwrap().todos.items.len(), 8);
+    }
+
+    #[test]
+    fn delete_todo_preserves_other_ids_and_clears_dependencies() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path();
+        fs::write(
+            project.join("TODO.md"),
+            render_todo_document(&TodoDocument {
+                relative_path: None,
+                items: vec![
+                    sample_todo("TODO-001", TodoPriority::High, &[]),
+                    sample_todo("TODO-003", TodoPriority::Medium, &["TODO-001"]),
+                ],
+                warnings: Vec::new(),
+                preserved_content: None,
+            }),
+        )
+        .unwrap();
+
+        let service = ProjectStateService::default();
+        let deleted = service
+            .delete_todo(Uuid::new_v4(), project, "TODO-001")
+            .unwrap();
+        let state = service.inspect(project).unwrap();
+
+        assert_eq!(deleted.id, "TODO-001");
+        assert_eq!(state.todos.items.len(), 1);
+        assert_eq!(state.todos.items[0].id, "TODO-003");
+        assert!(state.todos.items[0].dependencies.is_empty());
+    }
+
+    #[test]
+    fn delete_todo_rejects_a_pending_completion() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path();
+        let project_id = Uuid::new_v4();
+        fs::write(
+            project.join("TODO.md"),
+            render_todo_document(&TodoDocument {
+                relative_path: None,
+                items: vec![sample_todo("TODO-001", TodoPriority::High, &[])],
+                warnings: Vec::new(),
+                preserved_content: None,
+            }),
+        )
+        .unwrap();
+
+        let service = ProjectStateService::default();
+        service
+            .complete_todo(
+                project_id,
+                project,
+                "TODO-001",
+                CompleteTodoInput {
+                    summary: "Done.".into(),
+                    limitations: "none".into(),
+                },
+            )
+            .unwrap();
+
+        let error = service
+            .delete_todo(project_id, project, "TODO-001")
+            .unwrap_err();
+        assert!(error.to_string().contains("pending completion proposal"));
+        assert_eq!(service.inspect(project).unwrap().todos.items.len(), 1);
     }
 }

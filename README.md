@@ -113,7 +113,7 @@ Projector turns `TODO.md` into a compact work view instead of treating it as an 
 - a rationale; and
 - acceptance criteria.
 
-The interface supports priority, availability, category, and age filters. Opening a TODO shows its dependencies, rationale, and acceptance criteria. Missing dependencies, cycles, malformed entries, and unrecognized source content are surfaced as validation warnings rather than silently discarded.
+The interface supports creating TODOs, priority, availability, category, and age filters. Opening a TODO shows its dependencies, rationale, and acceptance criteria, and lets the user permanently delete it. Deletion preserves the IDs of remaining TODOs and clears references to the deleted item from their dependencies. Missing dependencies, cycles, malformed entries, and unrecognized source content are surfaced as validation warnings rather than silently discarded.
 
 TODO status is derived rather than duplicated: an item with unresolved dependencies is blocked; one without unresolved dependencies is available to work on.
 

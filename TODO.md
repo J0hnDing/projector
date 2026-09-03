@@ -1,25 +1,3 @@
-## TODO-001: Define the security and lifecycle design for a permissioned runtime-management service
-
-- Priority: low
-- Category: research
-- Area: runtime-management
-- Dependencies: none
-- Rationale: Projector's narrow Startup launcher intentionally does not own or track processes. Stop, restart, and build controls require an explicit trust boundary, authorization model, and lifecycle owner before they can be considered for implementation.
-
--Acceptance Criteria:
-Document the proposed service boundary, user-authorization flow, permitted operations, process ownership, restart recovery, failure handling, and test strategy. Keep the service separate from the observer and existing Startup launcher, and identify any Tauri capabilities or subprocess permissions it would require. Do not implement runtime controls as part of this research task.
-
-## TODO-002: Add bounded health and log observation for managed project processes
-
-- Priority: low
-- Category: feature
-- Area: runtime-management
-- Dependencies: TODO-001
-- Rationale: Health and logs are meaningful only when Projector has an approved runtime service with explicit ownership of the processes being observed.
-
--Acceptance Criteria:
-Observe only processes started and owned by the approved runtime-management service. Require deliberate user authorization, bound log retention and resource use, represent unavailable and stale states clearly, avoid exposing secrets, and cover startup, shutdown, restart, failure, and recovery behavior with backend and UI tests.
-
 ## TODO-003: Add registry backup, restore, and registered-path relocation
 
 - Priority: low

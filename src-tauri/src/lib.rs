@@ -464,6 +464,20 @@ async fn add_todo(
 }
 
 #[tauri::command]
+async fn delete_todo(
+    id: Uuid,
+    todo_id: String,
+    state: State<'_, AppState>,
+) -> Result<TodoItem, String> {
+    let root = registered_root(id, &state)?;
+    let service = Arc::clone(&state.project_state);
+    tauri::async_runtime::spawn_blocking(move || service.delete_todo(id, &root, &todo_id))
+        .await
+        .map_err(|error| format!("Unable to delete TODO: {error}"))?
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn complete_todo(
     id: Uuid,
     todo_id: String,
@@ -675,6 +689,7 @@ pub fn run() {
             commit_project,
             push_project,
             add_todo,
+            delete_todo,
             complete_todo,
             list_pending_reviews,
             approve_completion,

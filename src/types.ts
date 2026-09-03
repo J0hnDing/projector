@@ -89,6 +89,16 @@ export interface TodoItem {
   acceptanceCriteria: string;
 }
 
+export interface AddTodoInput {
+  title: string;
+  priority: TodoPriority;
+  category: WorkCategory;
+  area: string;
+  dependencies: string[];
+  rationale: string;
+  acceptanceCriteria: string;
+}
+
 export interface TodoDocument {
   relativePath: string | null;
   items: TodoItem[];

@@ -8,6 +8,7 @@ import remarkGfm from "remark-gfm";
 import * as api from "./api";
 import projectorLogo from "./assets/projector-logo.png";
 import type {
+  AddTodoInput,
   CodexLifecycleState,
   CodexMonitoringSnapshot,
   CodexTransitionKind,
@@ -409,6 +410,34 @@ export default function App() {
     }
   };
 
+  const createTodo = async (input: AddTodoInput) => {
+    const id = selectedIdRef.current;
+    if (!id) return;
+    setError(null);
+    try {
+      await api.addTodo(id, input);
+      setDetail(await api.refreshProject(id));
+      await loadProjects();
+    } catch (reason) {
+      setError(`Unable to create TODO: ${messageFrom(reason)}`);
+      throw reason;
+    }
+  };
+
+  const deleteTodo = async (todoId: string) => {
+    const id = selectedIdRef.current;
+    if (!id) return;
+    setError(null);
+    try {
+      await api.deleteTodo(id, todoId);
+      setDetail(await api.refreshProject(id));
+      await loadProjects();
+    } catch (reason) {
+      setError(`Unable to delete TODO: ${messageFrom(reason)}`);
+      throw reason;
+    }
+  };
+
   const commit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const id = selectedIdRef.current;
@@ -703,6 +732,8 @@ export default function App() {
             onRemove={() => void remove()}
             onApproveCompletion={(proposalId) => void approveCompletion(proposalId)}
             onRejectCompletion={(proposalId) => void rejectCompletion(proposalId)}
+            onCreateTodo={createTodo}
+            onDeleteTodo={deleteTodo}
             codexMonitoring={codexMonitoring}
             codexBusySession={codexBusySession}
             onLinkCodexSession={(sessionId) => void linkCodexSession(sessionId)}
@@ -894,6 +925,8 @@ function ProjectView({
   onRemove,
   onApproveCompletion,
   onRejectCompletion,
+  onCreateTodo,
+  onDeleteTodo,
   codexMonitoring,
   codexBusySession,
   onLinkCodexSession,
@@ -912,6 +945,8 @@ function ProjectView({
   onRemove: () => void;
   onApproveCompletion: (proposalId: string) => void;
   onRejectCompletion: (proposalId: string) => void;
+  onCreateTodo: (input: AddTodoInput) => Promise<void>;
+  onDeleteTodo: (todoId: string) => Promise<void>;
   codexMonitoring: CodexMonitoringSnapshot | null;
   codexBusySession: string | null;
   onLinkCodexSession: (sessionId: string) => void;
@@ -1011,7 +1046,12 @@ function ProjectView({
         {tab === "agents" && <DocumentPanel document={detail.documents.agents} />}
         {tab === "startup" && <DocumentPanel copyPowerShell document={detail.documents.startup} />}
         {tab === "todo" && (
-          <TodoPanel document={detail.state.todos} source={detail.documents.todo} />
+          <TodoPanel
+            document={detail.state.todos}
+            onCreate={onCreateTodo}
+            onDelete={onDeleteTodo}
+            source={detail.documents.todo}
+          />
         )}
         {tab === "pending" && (
           <PendingReviewPanel
@@ -1818,24 +1858,86 @@ function SettingsIntro({
 export function TodoPanel({
   document,
   source,
+  onCreate,
+  onDelete,
 }: {
   document: TodoDocument;
   source: ProjectDocument;
+  onCreate: (input: AddTodoInput) => Promise<void>;
+  onDelete: (todoId: string) => Promise<void>;
 }) {
   const [selectedTodoId, setSelectedTodoId] = useState<string | null>(null);
   const [category, setCategory] = useState<WorkCategory | "all">("all");
   const [priority, setPriority] = useState<TodoPriority | "all">("all");
   const [availability, setAvailability] = useState<"all" | "available" | "blocked">("all");
   const [addedOrder, setAddedOrder] = useState<"newest" | "oldest">("newest");
+  const [createOpen, setCreateOpen] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [title, setTitle] = useState("");
+  const [newPriority, setNewPriority] = useState<TodoPriority>("medium");
+  const [newCategory, setNewCategory] = useState<WorkCategory>("feature");
+  const [area, setArea] = useState("");
+  const [dependencies, setDependencies] = useState<string[]>([]);
+  const [rationale, setRationale] = useState("");
+  const [acceptanceCriteria, setAcceptanceCriteria] = useState("");
+  const titleInput = useRef<HTMLInputElement>(null);
 
-  if (source.status === "missing") {
-    return (
-      <StatusMessage
-        title="TODO.md was not found"
-        body="Projector's add_todo operation can create the first structured TODO."
-      />
+  const beginCreate = () => {
+    setTitle("");
+    setNewPriority("medium");
+    setNewCategory("feature");
+    setArea("");
+    setDependencies([]);
+    setRationale("");
+    setAcceptanceCriteria("");
+    setActionError(null);
+    setCreateOpen(true);
+  };
+
+  const createTodo = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!title.trim() || !area.trim() || !rationale.trim() || !acceptanceCriteria.trim()) return;
+    setCreating(true);
+    setActionError(null);
+    try {
+      await onCreate({
+        title: title.trim(),
+        priority: newPriority,
+        category: newCategory,
+        area: area.trim(),
+        dependencies,
+        rationale: rationale.trim(),
+        acceptanceCriteria: acceptanceCriteria.trim(),
+      });
+      setCreateOpen(false);
+    } catch (reason) {
+      setActionError(messageFrom(reason));
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const deleteSelectedTodo = async () => {
+    const selectedTodo = document.items.find((item) => item.id === selectedTodoId);
+    if (!selectedTodo) return;
+    const confirmed = window.confirm(
+      `Delete ${selectedTodo.id}: ${selectedTodo.title}? This permanently removes it from TODO.md and clears it from other TODO dependencies.`,
     );
-  }
+    if (!confirmed) return;
+    setDeleting(true);
+    setActionError(null);
+    try {
+      await onDelete(selectedTodo.id);
+      setSelectedTodoId(null);
+    } catch (reason) {
+      setActionError(messageFrom(reason));
+    } finally {
+      setDeleting(false);
+    }
+  };
+
   if (source.status === "error") {
     return (
       <StatusMessage
@@ -1866,8 +1968,15 @@ export function TodoPanel({
         path={document.relativePath}
         count={document.items.length}
         noun="TODO"
+        action={<button className="primary-button compact-button" onClick={beginCreate} type="button">Add TODO</button>}
       />
       <ValidationWarnings warnings={document.warnings} />
+      {source.status === "missing" && (
+        <StatusMessage
+          title="TODO.md was not found"
+          body="Add the first TODO and Projector will create the structured project document."
+        />
+      )}
       {document.items.length > 0 && (
         <div className="history-controls todo-controls panel" aria-label="TODO filters">
           <label>
@@ -1924,7 +2033,7 @@ export function TodoPanel({
           </label>
         </div>
       )}
-      {document.items.length ? (
+      {source.status !== "missing" && (document.items.length ? (
         filteredItems.length ? (
           <div className="todo-list" aria-label="TODO list">
             <div className="todo-list-heading" aria-hidden="true">
@@ -1943,7 +2052,10 @@ export function TodoPanel({
                     aria-label={`Open ${item.title}`}
                     className="todo-summary"
                     id={`todo-${item.id}`}
-                    onClick={() => setSelectedTodoId(item.id)}
+                    onClick={() => {
+                      setActionError(null);
+                      setSelectedTodoId(item.id);
+                    }}
                     type="button"
                   >
                     <span className="todo-primary">
@@ -1964,8 +2076,109 @@ export function TodoPanel({
         )
       ) : (
         <StatusMessage title="No open TODOs" body="This project has no structured unfinished work." />
-      )}
+      ))}
       <PreservedContent content={document.preservedContent} />
+      {createOpen && (
+        <DetailWindow
+          id="create-todo"
+          initialFocusRef={titleInput}
+          onClose={() => {
+            if (!creating) setCreateOpen(false);
+          }}
+          title="Add a TODO"
+        >
+          <form className="todo-form" onSubmit={(event) => void createTodo(event)}>
+            {actionError && <div className="notice error" role="alert">{actionError}</div>}
+            <label className="todo-form-wide">
+              Title
+              <input
+                onChange={(event) => setTitle(event.target.value)}
+                placeholder="What needs to be done?"
+                ref={titleInput}
+                required
+                value={title}
+              />
+            </label>
+            <label>
+              Priority
+              <select value={newPriority} onChange={(event) => setNewPriority(event.target.value as TodoPriority)}>
+                <option value="critical">Critical</option>
+                <option value="high">High</option>
+                <option value="medium">Medium</option>
+                <option value="low">Low</option>
+              </select>
+            </label>
+            <label>
+              Category
+              <select value={newCategory} onChange={(event) => setNewCategory(event.target.value as WorkCategory)}>
+                {workCategories.map((value) => <option key={value} value={value}>{value}</option>)}
+              </select>
+            </label>
+            <label className="todo-form-wide">
+              Area
+              <input
+                onChange={(event) => setArea(event.target.value)}
+                placeholder="For example: project-state or UI"
+                required
+                value={area}
+              />
+            </label>
+            <fieldset className="todo-dependency-picker todo-form-wide">
+              <legend>Dependencies</legend>
+              <p>Select unfinished work that must be completed first.</p>
+              {document.items.length ? (
+                <div>
+                  {document.items.map((item) => (
+                    <label key={item.id}>
+                      <input
+                        checked={dependencies.includes(item.id)}
+                        onChange={(event) => setDependencies((current) => event.target.checked
+                          ? [...current, item.id]
+                          : current.filter((id) => id !== item.id))}
+                        type="checkbox"
+                      />
+                      <code>{item.id}</code>
+                      <span>{item.title}</span>
+                    </label>
+                  ))}
+                </div>
+              ) : (
+                <span className="todo-form-empty">No existing TODOs are available as dependencies.</span>
+              )}
+            </fieldset>
+            <label className="todo-form-wide">
+              Rationale
+              <textarea
+                onChange={(event) => setRationale(event.target.value)}
+                placeholder="Why is this work needed?"
+                required
+                rows={4}
+                value={rationale}
+              />
+            </label>
+            <label className="todo-form-wide">
+              Acceptance criteria
+              <textarea
+                onChange={(event) => setAcceptanceCriteria(event.target.value)}
+                placeholder="What must be true for this TODO to be complete?"
+                required
+                rows={4}
+                value={acceptanceCriteria}
+              />
+            </label>
+            <div className="todo-form-actions todo-form-wide">
+              <button className="secondary-button" disabled={creating} onClick={() => setCreateOpen(false)} type="button">Cancel</button>
+              <button
+                className="primary-button"
+                disabled={creating || !title.trim() || !area.trim() || !rationale.trim() || !acceptanceCriteria.trim()}
+                type="submit"
+              >
+                {creating ? "Adding…" : "Add TODO"}
+              </button>
+            </div>
+          </form>
+        </DetailWindow>
+      )}
       {selectedTodo && (
         <DetailWindow
           id="todo-detail"
@@ -2001,6 +2214,12 @@ export function TodoPanel({
             <p className="section-label">Acceptance criteria</p>
             <MarkdownContent content={selectedTodo.acceptanceCriteria} />
           </section>
+          {actionError && <div className="notice error" role="alert">{actionError}</div>}
+          <div className="todo-detail-actions">
+            <button className="secondary-button danger-button" disabled={deleting} onClick={() => void deleteSelectedTodo()} type="button">
+              {deleting ? "Deleting…" : "Delete TODO"}
+            </button>
+          </div>
         </DetailWindow>
       )}
     </div>
@@ -2237,15 +2456,20 @@ function DetailWindow({
   title: string;
 }) {
   const closeButton = useRef<HTMLButtonElement>(null);
+  const onCloseRef = useRef(onClose);
+
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
 
   useEffect(() => {
     (initialFocusRef?.current ?? closeButton.current)?.focus();
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape") onCloseRef.current();
     };
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [initialFocusRef, onClose]);
+  }, [initialFocusRef]);
 
   return (
     <div
@@ -2294,15 +2518,20 @@ function StructuredHeader({
   path,
   count,
   noun,
+  action,
 }: {
   path: string | null;
   count: number;
   noun: string;
+  action?: ReactNode;
 }) {
   return (
     <div className="structured-header">
       <code>{path ?? "Project document"}</code>
-      <span>{count} {count === 1 ? noun : `${noun}s`}</span>
+      <div className="structured-header-actions">
+        <span>{count} {count === 1 ? noun : `${noun}s`}</span>
+        {action}
+      </div>
     </div>
   );
 }

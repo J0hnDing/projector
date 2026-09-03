@@ -29,6 +29,8 @@ vi.mock("./api", () => ({
   openProject: vi.fn(),
   refreshProject: vi.fn(),
   refreshProjects: vi.fn(),
+  addTodo: vi.fn(),
+  deleteTodo: vi.fn(),
   pullProject: vi.fn(),
   commitProject: vi.fn(),
   pushProject: vi.fn(),
@@ -227,6 +229,8 @@ describe("App", () => {
     vi.mocked(api.openProject).mockReset();
     vi.mocked(api.refreshProject).mockReset();
     vi.mocked(api.refreshProjects).mockReset();
+    vi.mocked(api.addTodo).mockReset();
+    vi.mocked(api.deleteTodo).mockReset();
     vi.mocked(api.pullProject).mockReset();
     vi.mocked(api.commitProject).mockReset();
     vi.mocked(api.pushProject).mockReset();
@@ -703,6 +707,8 @@ describe("structured project state", () => {
   it("shows TODOs in a compact list and opens details in a closable window", async () => {
     render(
       <TodoPanel
+        onCreate={vi.fn()}
+        onDelete={vi.fn()}
         source={{ ...detail.documents.todo, status: "available", relativePath: "TODO.md" }}
         document={{
           relativePath: "TODO.md",
@@ -755,6 +761,8 @@ describe("structured project state", () => {
   it("filters TODOs by priority, availability, and category and sorts by added order", async () => {
     render(
       <TodoPanel
+        onCreate={vi.fn()}
+        onDelete={vi.fn()}
         source={{ ...detail.documents.todo, status: "available", relativePath: "TODO.md" }}
         document={{
           relativePath: "TODO.md",
@@ -818,6 +826,64 @@ describe("structured project state", () => {
 
     await userEvent.selectOptions(category, "all");
     expect(screen.getByRole("button", { name: "Open Build the feature" })).toBeInTheDocument();
+  });
+
+  it("creates and deletes TODOs from the TODO workspace", async () => {
+    const onCreate = vi.fn().mockResolvedValue(undefined);
+    const onDelete = vi.fn().mockResolvedValue(undefined);
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(
+      <TodoPanel
+        onCreate={onCreate}
+        onDelete={onDelete}
+        source={{ ...detail.documents.todo, status: "available", relativePath: "TODO.md" }}
+        document={{
+          relativePath: "TODO.md",
+          items: [{
+            id: "TODO-001",
+            title: "Existing work",
+            priority: "medium",
+            category: "feature",
+            area: "state",
+            dependencies: [],
+            rationale: "Needed.",
+            acceptanceCriteria: "It works.",
+          }],
+          warnings: [],
+          preservedContent: null,
+        }}
+      />,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "Add TODO" }));
+    const createDialog = screen.getByRole("dialog", { name: "Add a TODO" });
+    await userEvent.type(within(createDialog).getByLabelText("Title"), "Create from the UI");
+    await userEvent.selectOptions(within(createDialog).getByLabelText("Priority"), "high");
+    await userEvent.selectOptions(within(createDialog).getByLabelText("Category"), "bugfix");
+    await userEvent.type(within(createDialog).getByLabelText("Area"), "todo-ui");
+    await userEvent.click(within(createDialog).getByRole("checkbox", { name: /TODO-001.*Existing work/ }));
+    await userEvent.type(within(createDialog).getByLabelText("Rationale"), "Users need direct control.");
+    await userEvent.type(within(createDialog).getByLabelText("Acceptance criteria"), "The TODO is saved.");
+    await userEvent.click(within(createDialog).getByRole("button", { name: "Add TODO" }));
+
+    expect(onCreate).toHaveBeenCalledWith({
+      title: "Create from the UI",
+      priority: "high",
+      category: "bugfix",
+      area: "todo-ui",
+      dependencies: ["TODO-001"],
+      rationale: "Users need direct control.",
+      acceptanceCriteria: "The TODO is saved.",
+    });
+    expect(screen.queryByRole("dialog", { name: "Add a TODO" })).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Open Existing work" }));
+    const detailDialog = screen.getByRole("dialog", { name: "Existing work" });
+    await userEvent.click(within(detailDialog).getByRole("button", { name: "Delete TODO" }));
+
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining("Delete TODO-001: Existing work?"));
+    expect(onDelete).toHaveBeenCalledWith("TODO-001");
+    expect(screen.queryByRole("dialog", { name: "Existing work" })).not.toBeInTheDocument();
   });
 
   it("shows history metadata newest first and opens details in a closable window", async () => {

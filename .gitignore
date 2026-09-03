@@ -1,7 +1,10 @@
 node_modules/
 dist/
+.vs/
 src-tauri/target/
 src-tauri/gen/
+MIGRATION_REPORT.md
+*.projector-backup
 *.log
 *.tsbuildinfo
 vite.config.js

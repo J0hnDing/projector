@@ -3,6 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 
 import type {
+  AddTodoInput,
   CodexMonitoringSnapshot,
   CompletionProposal,
   GeneratedSubagentFile,
@@ -11,6 +12,7 @@ import type {
   SettingsMigrationResult,
   StartProjectResult,
   SubagentSettings,
+  TodoItem,
 } from "./types";
 
 export function listProjects(): Promise<ProjectSummary[]> {
@@ -75,6 +77,14 @@ export function refreshProject(id: string): Promise<ProjectDetail> {
 
 export function refreshProjects(): Promise<ProjectSummary[]> {
   return invoke("refresh_projects");
+}
+
+export function addTodo(id: string, input: AddTodoInput): Promise<TodoItem> {
+  return invoke("add_todo", { id, input });
+}
+
+export function deleteTodo(id: string, todoId: string): Promise<TodoItem> {
+  return invoke("delete_todo", { id, todoId });
 }
 
 export function pullProject(id: string): Promise<ProjectDetail> {
