@@ -6,6 +6,7 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import * as api from "./api";
+import projectorLogo from "./assets/projector-logo.png";
 import type {
   CodexLifecycleState,
   CodexMonitoringSnapshot,
@@ -2368,7 +2369,7 @@ function getPushUnavailableReason(git: GitInfo): string | null {
 }
 
 function CenteredMessage({ title, body, action }: { title: string; body?: string; action?: React.ReactNode }) {
-  return <div className="centered-message"><div className="projector-mark">P</div><h2>{title}</h2>{body && <p>{body}</p>}{action}</div>;
+  return <div className="centered-message"><img alt="" aria-hidden="true" className="projector-mark" src={projectorLogo} /><h2>{title}</h2>{body && <p>{body}</p>}{action}</div>;
 }
 
 function StatusMessage({ title, body, tone = "default" }: { title: string; body?: string; tone?: "default" | "error" }) {
